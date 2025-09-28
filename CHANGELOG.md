@@ -1,3 +1,10 @@
+# [1.1.0](https://github.com/cadenzaio/cadenza-db/compare/v1.0.0...v1.1.0) (2025-09-28)
+
+
+### Features
+
+* Start through exported static class. ([c1d04cd](https://github.com/cadenzaio/cadenza-db/commit/c1d04cd4f98c13377778cb68a50195a7c5c530aa))
+
 # 1.0.0 (2025-09-28)
 
 
