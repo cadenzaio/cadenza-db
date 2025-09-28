@@ -1,3 +1,10 @@
+## [1.1.2](https://github.com/cadenzaio/cadenza-db/compare/v1.1.1...v1.1.2) (2025-09-28)
+
+
+### Bug Fixes
+
+* Fixed publishing and improved onDelete rules. ([104531d](https://github.com/cadenzaio/cadenza-db/commit/104531d7b48851e9a0997a5154b0b756b25399bf))
+
 ## [1.1.1](https://github.com/cadenzaio/cadenza-db/compare/v1.1.0...v1.1.1) (2025-09-28)
 
 
