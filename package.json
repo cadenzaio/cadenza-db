@@ -1,0 +1,81 @@
+{
+  "name": "@cadenza.io/cadenza-db",
+  "version": "1.0.0",
+  "description": "This is a lightweight framework for building seamless distributed asynchronous graphs and flows of tasks and signals.",
+  "scripts": {
+    "start": "node --loader ts-node/esm src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "tsc && tsup"
+  },
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "release": {
+    "branches": [
+      "main"
+    ],
+    "plugins": [
+      "@semantic-release/commit-analyzer",
+      "@semantic-release/release-notes-generator",
+      "@semantic-release/changelog",
+      "@semantic-release/npm",
+      "@semantic-release/github",
+      [
+        "@semantic-release/git",
+        {
+          "assets": [
+            "CHANGELOG.md",
+            "package.json"
+          ],
+          "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+        }
+      ]
+    ]
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "graph-framework",
+    "task-orchestration",
+    "event-driven",
+    "signal-processing",
+    "workflow-engine",
+    "asynchronous-tasks",
+    "distributed-systems",
+    "meta-layer",
+    "ai-agents",
+    "self-evolving-systems"
+  ],
+  "author": "Emil Forsvall",
+  "license": "ISC",
+  "dependencies": {
+    "@cadenza.io/service": "^1.13.6"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.8.0",
+    "@commitlint/config-conventional": "^19.8.0",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^11.0.2",
+    "@semantic-release/npm": "^12.0.1",
+    "prettier": "3.6.2",
+    "semantic-release": "^24.2.3",
+    "tsup": "^8.4.0",
+    "tsx": "^4.20.2",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.3"
+  },
+  "private": true
+}
