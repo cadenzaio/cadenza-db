@@ -1,3 +1,10 @@
+## [1.1.3](https://github.com/cadenzaio/cadenza-db/compare/v1.1.2...v1.1.3) (2025-09-28)
+
+
+### Bug Fixes
+
+* now exposing default export ([66f9596](https://github.com/cadenzaio/cadenza-db/commit/66f9596b428a142d9b0e6fac8b0eeec4e1bae3db))
+
 ## [1.1.2](https://github.com/cadenzaio/cadenza-db/compare/v1.1.1...v1.1.2) (2025-09-28)
 
 
