@@ -1,3 +1,10 @@
+## [1.1.1](https://github.com/cadenzaio/cadenza-db/compare/v1.1.0...v1.1.1) (2025-09-28)
+
+
+### Bug Fixes
+
+* Removed unnecessary constraint. ([4fbe3da](https://github.com/cadenzaio/cadenza-db/commit/4fbe3da024781c79ded10b7ad05e71a04a6874f0))
+
 # [1.1.0](https://github.com/cadenzaio/cadenza-db/compare/v1.0.0...v1.1.0) (2025-09-28)
 
 
