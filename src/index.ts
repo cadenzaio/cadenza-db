@@ -732,7 +732,7 @@ export class CadenzaDB {
               execution_trace_id: {
                 type: "uuid",
                 references: "execution_trace(uuid)",
-                onDelete: "set null",
+                onDelete: "cascade",
                 default: null,
               },
               context_id: {
@@ -744,7 +744,7 @@ export class CadenzaDB {
               result_context_id: {
                 type: "uuid",
                 references: "context(uuid)",
-                onDelete: "set null",
+                onDelete: "cascade",
                 default: null,
               },
               is_scheduled: {
@@ -788,7 +788,7 @@ export class CadenzaDB {
               previous_routine_execution: {
                 type: "uuid",
                 references: "routine_execution(uuid)",
-                onDelete: "set default",
+                onDelete: "cascade",
                 default: null,
               },
               created: {
