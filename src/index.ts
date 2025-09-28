@@ -1,6 +1,6 @@
 import Cadenza from "@cadenza.io/service";
 
-export class CadenzaDB {
+export default class CadenzaDB {
   static createCadenzaDBService() {
     Cadenza.createMetaDatabaseService(
       "CadenzaDB",
@@ -2072,3 +2072,5 @@ export class CadenzaDB {
     );
   }
 }
+
+CadenzaDB.createCadenzaDBService();
