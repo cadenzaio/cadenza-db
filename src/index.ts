@@ -599,10 +599,6 @@ export class CadenzaDB {
               definition: {
                 type: "jsonb",
                 required: true,
-                constraints: {
-                  check:
-                    "definition->>'type' IS NOT NULL AND jsonb_typeof(definition) = 'object'",
-                },
               },
               service_name: {
                 type: "varchar",
