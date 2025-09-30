@@ -1,7 +1,7 @@
 import Cadenza from "@cadenza.io/service";
 
 export default class CadenzaDB {
-  static createCadenzaDBService() {
+  static createCadenzaDBService({ dropExisting = false } = {}) {
     Cadenza.createMetaDatabaseService(
       "CadenzaDB",
       {
@@ -2057,7 +2057,7 @@ export default class CadenzaDB {
           },
         },
         meta: {
-          // dropExisting: true,
+          dropExisting,
         },
       },
       "This is the official CadenzaDB database service. It is used to store metadata and execution data from the Cadenza framework.",
@@ -2072,5 +2072,3 @@ export default class CadenzaDB {
     );
   }
 }
-
-CadenzaDB.createCadenzaDBService();
