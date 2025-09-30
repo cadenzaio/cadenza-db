@@ -1,3 +1,10 @@
+## [1.1.4](https://github.com/cadenzaio/cadenza-db/compare/v1.1.3...v1.1.4) (2025-09-30)
+
+
+### Bug Fixes
+
+* removed creation and added dropExisting option. ([5a22f61](https://github.com/cadenzaio/cadenza-db/commit/5a22f616f7b5120dff39def847fe0f4bc3bf7e9d))
+
 ## [1.1.3](https://github.com/cadenzaio/cadenza-db/compare/v1.1.2...v1.1.3) (2025-09-28)
 
 
