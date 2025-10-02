@@ -1,3 +1,10 @@
+# [1.3.0](https://github.com/cadenzaio/cadenza-db/compare/v1.2.0...v1.3.0) (2025-10-02)
+
+
+### Features
+
+* TS configs and build improvements. ([fd99d2c](https://github.com/cadenzaio/cadenza-db/commit/fd99d2c5db665f2890564f91686c4ad028712079))
+
 # [1.2.0](https://github.com/cadenzaio/cadenza-db/compare/v1.1.4...v1.2.0) (2025-10-02)
 
 
