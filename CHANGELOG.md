@@ -1,3 +1,10 @@
+# [1.2.0](https://github.com/cadenzaio/cadenza-db/compare/v1.1.4...v1.2.0) (2025-10-02)
+
+
+### Features
+
+* Service instance update ([e638c9f](https://github.com/cadenzaio/cadenza-db/commit/e638c9f9c95021fc0b1c14e1ed92bd2a1d832263))
+
 ## [1.1.4](https://github.com/cadenzaio/cadenza-db/compare/v1.1.3...v1.1.4) (2025-09-30)
 
 
