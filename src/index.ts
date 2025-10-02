@@ -1218,6 +1218,12 @@ export default class CadenzaDB {
             customSignals: {
               triggers: {
                 insert: ["meta.rest.network_configured"],
+                update: [
+                  "meta.service_registry.service_handshake",
+                  "*.meta.service_registry.service_handshake",
+                  "meta.service_registry.service_not_responding",
+                  "*.meta.service_registry.service_not_responding",
+                ],
               },
             },
           },
@@ -1325,6 +1331,11 @@ export default class CadenzaDB {
               "service_instance_client_id",
               "communication_type",
             ],
+            customSignals: {
+              triggers: {
+                insert: ["meta.fetch.service_communication_established"],
+              },
+            },
           },
 
           deputy_task_map: {
