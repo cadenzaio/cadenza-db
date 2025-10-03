@@ -1,3 +1,10 @@
+## [1.3.1](https://github.com/cadenzaio/cadenza-db/compare/v1.3.0...v1.3.1) (2025-10-03)
+
+
+### Bug Fixes
+
+* service package update ([7dd5f8d](https://github.com/cadenzaio/cadenza-db/commit/7dd5f8d95fa13992f1f4a8cd98b8705406b4c0f3))
+
 # [1.3.0](https://github.com/cadenzaio/cadenza-db/compare/v1.2.0...v1.3.0) (2025-10-02)
 
 
