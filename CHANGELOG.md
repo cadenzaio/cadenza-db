@@ -1,3 +1,10 @@
+## [1.4.4](https://github.com/cadenzaio/cadenza-db/compare/v1.4.3...v1.4.4) (2025-10-04)
+
+
+### Bug Fixes
+
+* fixed dropExisting and service instance insert conflict. ([1d527a6](https://github.com/cadenzaio/cadenza-db/commit/1d527a6eecda8e055ad4d9cc3c8ed7d96e802ea8))
+
 ## [1.4.3](https://github.com/cadenzaio/cadenza-db/compare/v1.4.2...v1.4.3) (2025-10-04)
 
 
