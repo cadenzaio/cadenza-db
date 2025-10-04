@@ -1,3 +1,10 @@
+# [1.5.0](https://github.com/cadenzaio/cadenza-db/compare/v1.4.6...v1.5.0) (2025-10-04)
+
+
+### Features
+
+* added timeout to fetch calls. ([e49ccf0](https://github.com/cadenzaio/cadenza-db/commit/e49ccf03580b54ab332a6db0bf0520ad5f3b121c))
+
 ## [1.4.6](https://github.com/cadenzaio/cadenza-db/compare/v1.4.5...v1.4.6) (2025-10-04)
 
 
