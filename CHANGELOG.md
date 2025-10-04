@@ -1,3 +1,10 @@
+## [1.4.5](https://github.com/cadenzaio/cadenza-db/compare/v1.4.4...v1.4.5) (2025-10-04)
+
+
+### Bug Fixes
+
+* service package update. ([26be6ec](https://github.com/cadenzaio/cadenza-db/commit/26be6ec55f610cce7432f1020ac9e0548a50d6da))
+
 ## [1.4.4](https://github.com/cadenzaio/cadenza-db/compare/v1.4.3...v1.4.4) (2025-10-04)
 
 
