@@ -1,3 +1,10 @@
+## [1.4.3](https://github.com/cadenzaio/cadenza-db/compare/v1.4.2...v1.4.3) (2025-10-04)
+
+
+### Bug Fixes
+
+* fixed port option. ([afbf936](https://github.com/cadenzaio/cadenza-db/commit/afbf936b833ef00bc75fa3bd10b238de6bb3fa13))
+
 ## [1.4.2](https://github.com/cadenzaio/cadenza-db/compare/v1.4.1...v1.4.2) (2025-10-04)
 
 
