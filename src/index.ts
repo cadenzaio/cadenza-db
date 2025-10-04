@@ -1,12 +1,9 @@
 import Cadenza from "@cadenza.io/service";
 
 export default class CadenzaDB {
-  static createCadenzaDBService({
-    dropExisting = false,
-    port = undefined,
-  }: {
-    dropExisting: boolean;
-    port: number | undefined;
+  static createCadenzaDBService(options: {
+    dropExisting?: boolean;
+    port?: number | undefined;
   }) {
     Cadenza.createMetaDatabaseService(
       "CadenzaDB",
@@ -2074,7 +2071,7 @@ export default class CadenzaDB {
           },
         },
         meta: {
-          dropExisting,
+          dropExisting: options.dropExisting ?? false,
         },
       },
       "This is the official CadenzaDB database service. It is used to store metadata and execution data from the Cadenza framework.",
@@ -2084,7 +2081,7 @@ export default class CadenzaDB {
         databaseType: "postgres",
         databaseName: "cadenza_db",
         poolSize: 50,
-        port,
+        port: options.port,
       },
     );
   }
