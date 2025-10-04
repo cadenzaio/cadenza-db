@@ -1,7 +1,13 @@
 import Cadenza from "@cadenza.io/service";
 
 export default class CadenzaDB {
-  static createCadenzaDBService({ dropExisting = false } = {}) {
+  static createCadenzaDBService({
+    dropExisting = false,
+    port = undefined,
+  }: {
+    dropExisting: boolean;
+    port: number | undefined;
+  }) {
     Cadenza.createMetaDatabaseService(
       "CadenzaDB",
       {
@@ -2078,7 +2084,7 @@ export default class CadenzaDB {
         databaseType: "postgres",
         databaseName: "cadenza_db",
         poolSize: 50,
-        port: 5001,
+        port,
       },
     );
   }
