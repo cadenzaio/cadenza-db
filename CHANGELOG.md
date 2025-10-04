@@ -1,3 +1,10 @@
+## [1.4.1](https://github.com/cadenzaio/cadenza-db/compare/v1.4.0...v1.4.1) (2025-10-04)
+
+
+### Bug Fixes
+
+* removed hardcoded port ([bfb06fd](https://github.com/cadenzaio/cadenza-db/commit/bfb06fd21d36b18365a61674e22949282300230a))
+
 # [1.4.0](https://github.com/cadenzaio/cadenza-db/compare/v1.3.2...v1.4.0) (2025-10-03)
 
 
