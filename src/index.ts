@@ -2081,7 +2081,7 @@ export default class CadenzaDB {
         databaseType: "postgres",
         databaseName: "cadenza_db",
         poolSize: 50,
-        port: options.port,
+        port: options.port ?? parseInt(process.env.HTTP_PORT ?? "8080"),
       },
     );
   }
