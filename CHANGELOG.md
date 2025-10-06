@@ -1,3 +1,10 @@
+# [1.6.0](https://github.com/cadenzaio/cadenza-db/compare/v1.5.2...v1.6.0) (2025-10-06)
+
+
+### Features
+
+* service package update. sync interval. ([9e33444](https://github.com/cadenzaio/cadenza-db/commit/9e33444dcf55afc80e8d00329f57287b90b243aa))
+
 ## [1.5.2](https://github.com/cadenzaio/cadenza-db/compare/v1.5.1...v1.5.2) (2025-10-06)
 
 
