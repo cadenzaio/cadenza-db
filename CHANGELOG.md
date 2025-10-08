@@ -1,3 +1,10 @@
+## [1.6.3](https://github.com/cadenzaio/cadenza-db/compare/v1.6.2...v1.6.3) (2025-10-08)
+
+
+### Bug Fixes
+
+* signal sync optimizations. ([e25863e](https://github.com/cadenzaio/cadenza-db/commit/e25863ebb9483dbad873da4575cbe6a426b299b7))
+
 ## [1.6.2](https://github.com/cadenzaio/cadenza-db/compare/v1.6.1...v1.6.2) (2025-10-08)
 
 
