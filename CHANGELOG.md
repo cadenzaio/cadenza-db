@@ -1,3 +1,10 @@
+## [1.8.1](https://github.com/cadenzaio/cadenza-db/compare/v1.8.0...v1.8.1) (2025-10-10)
+
+
+### Bug Fixes
+
+* debug ([b7fe69a](https://github.com/cadenzaio/cadenza-db/commit/b7fe69a15fd48e49a1d9d5e07d680caea52358cc))
+
 # [1.8.0](https://github.com/cadenzaio/cadenza-db/compare/v1.7.0...v1.8.0) (2025-10-10)
 
 
