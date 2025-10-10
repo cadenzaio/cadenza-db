@@ -1,3 +1,10 @@
+# [1.7.0](https://github.com/cadenzaio/cadenza-db/compare/v1.6.3...v1.7.0) (2025-10-10)
+
+
+### Features
+
+* added awaitExists feature. ([2d0a44e](https://github.com/cadenzaio/cadenza-db/commit/2d0a44ea9f29b9407662941f2892b6624c761878))
+
 ## [1.6.3](https://github.com/cadenzaio/cadenza-db/compare/v1.6.2...v1.6.3) (2025-10-08)
 
 
