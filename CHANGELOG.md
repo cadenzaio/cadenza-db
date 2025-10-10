@@ -1,3 +1,10 @@
+## [1.8.2](https://github.com/cadenzaio/cadenza-db/compare/v1.8.1...v1.8.2) (2025-10-10)
+
+
+### Bug Fixes
+
+* awaitExists bug. ([6bddb28](https://github.com/cadenzaio/cadenza-db/commit/6bddb28511e835c4697435e804a8c7dfacbbbcff))
+
 ## [1.8.1](https://github.com/cadenzaio/cadenza-db/compare/v1.8.0...v1.8.1) (2025-10-10)
 
 
