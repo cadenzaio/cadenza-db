@@ -1336,7 +1336,10 @@ export default class CadenzaDB {
             ],
             customSignals: {
               triggers: {
-                insert: ["meta.fetch.service_communication_established"],
+                insert: [
+                  "*.meta.fetch.service_communication_established",
+                  "meta.fetch.service_communication_established",
+                ],
               },
             },
           },
