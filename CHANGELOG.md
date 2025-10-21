@@ -1,3 +1,10 @@
+## [1.8.9](https://github.com/cadenzaio/cadenza-db/compare/v1.8.8...v1.8.9) (2025-10-21)
+
+
+### Bug Fixes
+
+* fixed service to service communication map trigger. ([52924bd](https://github.com/cadenzaio/cadenza-db/commit/52924bd2d026ae000df81b926268b19db5a4e473))
+
 ## [1.8.8](https://github.com/cadenzaio/cadenza-db/compare/v1.8.7...v1.8.8) (2025-10-16)
 
 
