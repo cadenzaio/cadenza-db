@@ -56,7 +56,6 @@ export default class CadenzaDB {
           },
 
           database_service: {
-            // TODO
             fields: {
               id: {
                 type: "uuid",
@@ -95,6 +94,14 @@ export default class CadenzaDB {
               },
             },
             uniqueConstraints: [["service_name"]],
+            customSignals: {
+              triggers: {
+                insert: [
+                  "meta.created_database_service",
+                  "*.meta.created_database_service",
+                ],
+              },
+            },
           },
 
           generated_by_type: {
@@ -346,6 +353,10 @@ export default class CadenzaDB {
                   max: 2147483647,
                 },
                 default: 0,
+              },
+              last_executed: {
+                type: "timestamp",
+                default: null,
               },
               deleted: {
                 type: "boolean",
@@ -1175,6 +1186,14 @@ export default class CadenzaDB {
                 onDelete: "cascade",
                 required: true,
               },
+              is_database: {
+                type: "boolean",
+                default: false,
+              },
+              is_frontend: {
+                type: "boolean",
+                default: false,
+              },
               is_blocked: {
                 type: "boolean",
                 default: false,
@@ -1186,6 +1205,11 @@ export default class CadenzaDB {
               is_active: {
                 type: "boolean",
                 default: true,
+              },
+              last_active: {
+                // TODO
+                type: "timestamp",
+                default: null,
               },
               exposed: {
                 type: "boolean",
@@ -1293,7 +1317,6 @@ export default class CadenzaDB {
           },
 
           service_to_service_communication_map: {
-            // TODO
             fields: {
               service_instance_id: {
                 type: "uuid",
@@ -1314,6 +1337,11 @@ export default class CadenzaDB {
                   maxLength: 50,
                   check: "communication_type IN ('delegation', 'signal')",
                 },
+              },
+              last_executed: {
+                // TODO
+                type: "timestamp",
+                default: null,
               },
               created: {
                 type: "timestamp",
@@ -1345,7 +1373,6 @@ export default class CadenzaDB {
           },
 
           deputy_task_map: {
-            // TODO
             fields: {
               deputy_task_name: {
                 type: "varchar",
@@ -1360,6 +1387,7 @@ export default class CadenzaDB {
                 required: true,
               },
               triggered_task_version: {
+                // TODO
                 type: "int",
                 default: 1,
               },
@@ -1375,21 +1403,9 @@ export default class CadenzaDB {
                 onDelete: "cascade",
                 required: true,
               },
-              deputy_service_instance_id: {
-                type: "uuid",
-                references: "service_instance(uuid)",
-                onDelete: "cascade",
-                required: true,
-              },
-              triggered_service_instance_id: {
-                type: "uuid",
-                references: "service_instance(uuid)",
-                onDelete: "cascade",
-                required: true,
-              },
               last_executed: {
                 type: "timestamp",
-                default: "now()",
+                default: null,
               },
               execution_count: {
                 type: "int",
@@ -1437,10 +1453,23 @@ export default class CadenzaDB {
                 referenceFields: ["name", "version", "service_name"],
               },
             ],
+            customSignals: {
+              triggers: {
+                insert: [
+                  "meta.graph_metadata.deputy_relationship_created",
+                  "*.meta.graph_metadata.deputy_relationship_created",
+                  "meta.sync_controller.deputy_relationship_created",
+                  "*.meta.sync_controller.deputy_relationship_created",
+                ],
+                update: [
+                  "meta.graph_metadata.explicit_relationship_executed",
+                  "*.meta.graph_metadata.explicit_relationship_executed",
+                ],
+              },
+            },
           },
 
           deputy_task_execution_map: {
-            // TODO
             fields: {
               deputy_task_execution_id: {
                 type: "uuid",
@@ -1460,6 +1489,14 @@ export default class CadenzaDB {
               },
             },
             primaryKey: ["deputy_task_execution_id", "task_execution_id"],
+            customSignals: {
+              triggers: {
+                insert: [
+                  "meta.graph_metadata.explicit_relationship_created",
+                  "*.meta.graph_metadata.explicit_relationship_created",
+                ],
+              },
+            },
           },
 
           signal_registry: {
@@ -1470,6 +1507,12 @@ export default class CadenzaDB {
                 constraints: {
                   maxLength: 150,
                 },
+              },
+              source_service_name: {
+                type: "varchar",
+                references: "service(name)",
+                onDelete: "cascade",
+                default: null,
               },
               domain: {
                 type: "varchar",
@@ -1505,7 +1548,7 @@ export default class CadenzaDB {
               },
             },
             primaryKey: ["name", "service_name"],
-            indexes: [["is_meta", "domain"]],
+            indexes: [["is_meta", "domain", "action", "source_service_name"]],
             customSignals: {
               triggers: {
                 insert: [
@@ -1545,10 +1588,12 @@ export default class CadenzaDB {
                 required: true,
               },
               last_emitted: {
+                // TODO
                 type: "timestamp",
                 default: "now()",
               },
               emit_count: {
+                // TODO
                 type: "int",
                 default: 0,
               },
@@ -1621,10 +1666,12 @@ export default class CadenzaDB {
                 default: false,
               },
               last_emitted: {
+                // TODO
                 type: "timestamp",
                 default: "now()",
               },
               emit_count: {
+                // TODO
                 type: "int",
                 default: 0,
               },
@@ -1672,7 +1719,6 @@ export default class CadenzaDB {
           },
 
           signal_emission: {
-            // TODO: Register non task-related signal emissions
             fields: {
               uuid: {
                 type: "uuid",
