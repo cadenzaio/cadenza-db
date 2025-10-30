@@ -1,3 +1,10 @@
+# [1.9.0](https://github.com/cadenzaio/cadenza-db/compare/v1.8.9...v1.9.0) (2025-10-30)
+
+
+### Features
+
+* Added new custom signals for several tables. ([bbce4a2](https://github.com/cadenzaio/cadenza-db/commit/bbce4a254ed99ff0c87b10ed27e197c6bb216966))
+
 ## [1.8.9](https://github.com/cadenzaio/cadenza-db/compare/v1.8.8...v1.8.9) (2025-10-21)
 
 
