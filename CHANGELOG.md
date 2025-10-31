@@ -1,3 +1,10 @@
+## [1.9.6](https://github.com/cadenzaio/cadenza-db/compare/v1.9.5...v1.9.6) (2025-10-31)
+
+
+### Bug Fixes
+
+* package update. ([4ac9195](https://github.com/cadenzaio/cadenza-db/commit/4ac91954de2f29f5f69fa1c430197e7b75c38360))
+
 ## [1.9.5](https://github.com/cadenzaio/cadenza-db/compare/v1.9.4...v1.9.5) (2025-10-31)
 
 
