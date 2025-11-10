@@ -692,7 +692,7 @@ export default class CadenzaDB {
                 primary: true,
               },
               context: {
-                type: "bytea",
+                type: "jsonb", // TODO: change to bytea
                 required: true,
               },
               context_schema_id: {
@@ -1759,7 +1759,7 @@ export default class CadenzaDB {
                 required: true,
               },
               data: {
-                type: "bytea",
+                type: "jsonb",
                 default: "'{}'",
               },
               metadata: {
