@@ -1,3 +1,10 @@
+# [1.11.0](https://github.com/cadenzaio/cadenza-db/compare/v1.10.0...v1.11.0) (2025-11-10)
+
+
+### Features
+
+* Stable. ([0e3927d](https://github.com/cadenzaio/cadenza-db/commit/0e3927d28406663be60c3f7fa9d9b0add4067be0))
+
 # [1.10.0](https://github.com/cadenzaio/cadenza-db/compare/v1.9.16...v1.10.0) (2025-11-06)
 
 
