@@ -1232,15 +1232,11 @@ export default class CadenzaDB {
                 default: false,
               },
             },
-            uniqueConstraints: [["address", "port", "process_pid"]],
+            uniqueConstraints: [
+              ["address", "port", "process_pid", "is_active"],
+            ],
             indexes: [
-              [
-                "is_active",
-                "is_non_responsive",
-                "is_blocked",
-                "is_primary",
-                "service_name",
-              ],
+              ["is_non_responsive", "is_blocked", "is_primary", "service_name"],
             ],
             customSignals: {
               triggers: {
@@ -1250,6 +1246,8 @@ export default class CadenzaDB {
                   "*.meta.service_registry.service_handshake",
                   "meta.service_registry.service_not_responding",
                   "*.meta.service_registry.service_not_responding",
+                  "meta.sync_controller.synced",
+                  "*.meta.sync_controller.synced",
                 ],
               },
             },
@@ -2117,6 +2115,74 @@ export default class CadenzaDB {
                 "service_name",
               ],
             ],
+          },
+
+          system_log: {
+            fields: {
+              uuid: {
+                type: "uuid",
+                primary: true,
+                default: "gen_random_uuid()",
+              },
+              message: {
+                type: "text",
+                default: "",
+              },
+              level: {
+                type: "text",
+                default: "info",
+                constraints: {
+                  check: "level IN ('info', 'warning', 'error', 'critical')",
+                },
+              },
+              service_name: {
+                type: "varchar",
+                references: "service(name)",
+                onDelete: "cascade",
+                required: true,
+              },
+              service_instance_id: {
+                type: "uuid",
+                references: "service_instance(uuid)",
+                onDelete: "cascade",
+                required: true,
+              },
+              subject_service_name: {
+                type: "varchar",
+                references: "service(name)",
+                onDelete: "cascade",
+                default: null,
+              },
+              subject_service_instance_id: {
+                type: "uuid",
+                references: "service_instance(uuid)",
+                onDelete: "cascade",
+                default: null,
+              },
+              data: {
+                type: "jsonb",
+                default: "'{}'",
+              },
+              created: {
+                type: "timestamp",
+                default: "now()",
+              },
+            },
+            indexes: [
+              [
+                "created_at",
+                "level",
+                "service_name",
+                "service_instance_id",
+                "subject_service_name",
+                "subject_service_instance_id",
+              ],
+            ],
+            customSignals: {
+              triggers: {
+                insert: ["meta.system_log.log", "*.meta.system_log.log"],
+              },
+            },
           },
         },
         meta: {
