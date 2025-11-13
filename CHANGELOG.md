@@ -1,3 +1,10 @@
+## [1.12.3](https://github.com/cadenzaio/cadenza-db/compare/v1.12.2...v1.12.3) (2025-11-13)
+
+
+### Bug Fixes
+
+* fixed system log table. ([5ddf679](https://github.com/cadenzaio/cadenza-db/commit/5ddf679fc32d184c323c82eb4cd2a7dc20994518))
+
 ## [1.12.2](https://github.com/cadenzaio/cadenza-db/compare/v1.12.1...v1.12.2) (2025-11-13)
 
 
