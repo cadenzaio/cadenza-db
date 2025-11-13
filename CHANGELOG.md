@@ -1,3 +1,10 @@
+# [1.12.0](https://github.com/cadenzaio/cadenza-db/compare/v1.11.0...v1.12.0) (2025-11-13)
+
+
+### Features
+
+* Added system log. ([4298346](https://github.com/cadenzaio/cadenza-db/commit/4298346b6c4c1a279ffa9e830fa2f9194bb75b83))
+
 # [1.11.0](https://github.com/cadenzaio/cadenza-db/compare/v1.10.0...v1.11.0) (2025-11-10)
 
 
