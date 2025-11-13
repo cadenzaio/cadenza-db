@@ -2134,8 +2134,7 @@ export default class CadenzaDB {
                 default: "",
               },
               level: {
-                type: "text",
-                default: "info",
+                type: "varchar",
                 constraints: {
                   check: "level IN ('info', 'warning', 'error', 'critical')",
                 },
@@ -2175,7 +2174,7 @@ export default class CadenzaDB {
             },
             indexes: [
               [
-                "created_at",
+                "created",
                 "level",
                 "service_name",
                 "service_instance_id",
