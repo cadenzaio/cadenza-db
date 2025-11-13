@@ -1232,11 +1232,16 @@ export default class CadenzaDB {
                 default: false,
               },
             },
-            uniqueConstraints: [
-              ["address", "port", "process_pid", "is_active"],
-            ],
             indexes: [
-              ["is_non_responsive", "is_blocked", "is_primary", "service_name"],
+              [
+                "is_non_responsive",
+                "is_active",
+                "is_blocked",
+                "is_primary",
+                "service_name",
+                "address",
+                "port",
+              ],
             ],
             customSignals: {
               triggers: {
