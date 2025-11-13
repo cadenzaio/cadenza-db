@@ -1,3 +1,10 @@
+## [1.12.1](https://github.com/cadenzaio/cadenza-db/compare/v1.12.0...v1.12.1) (2025-11-13)
+
+
+### Bug Fixes
+
+* removed unique constraint from service instance. ([2892778](https://github.com/cadenzaio/cadenza-db/commit/28927781898ba4974e14e92a2f352977dc2ceced))
+
 # [1.12.0](https://github.com/cadenzaio/cadenza-db/compare/v1.11.0...v1.12.0) (2025-11-13)
 
 
