@@ -1,3 +1,10 @@
+# [1.13.0](https://github.com/cadenzaio/cadenza-db/compare/v1.12.3...v1.13.0) (2025-11-20)
+
+
+### Features
+
+* improved signal records ([e3d10d3](https://github.com/cadenzaio/cadenza-db/commit/e3d10d3a872494f14e76e2ce296412dc9e9a5bce))
+
 ## [1.12.3](https://github.com/cadenzaio/cadenza-db/compare/v1.12.2...v1.12.3) (2025-11-13)
 
 
