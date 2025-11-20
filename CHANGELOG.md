@@ -1,3 +1,10 @@
+## [1.13.2](https://github.com/cadenzaio/cadenza-db/compare/v1.13.1...v1.13.2) (2025-11-20)
+
+
+### Bug Fixes
+
+* update package ([be50210](https://github.com/cadenzaio/cadenza-db/commit/be5021062614e852f90f3c13d17fe6691f8b4b9f))
+
 ## [1.13.1](https://github.com/cadenzaio/cadenza-db/compare/v1.13.0...v1.13.1) (2025-11-20)
 
 
