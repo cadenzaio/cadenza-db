@@ -1732,6 +1732,10 @@ export default class CadenzaDB {
                 type: "varchar",
                 required: true,
               },
+              signal_tag: {
+                type: "varchar",
+                default: null,
+              },
               task_name: {
                 type: "varchar",
                 default: null,
@@ -1760,6 +1764,18 @@ export default class CadenzaDB {
                 references: "service_instance(uuid)",
                 onDelete: "cascade",
                 required: true,
+              },
+              execution_trace_id: {
+                type: "uuid",
+                references: "execution_trace(uuid)",
+                onDelete: "cascade",
+                default: null,
+              },
+              routine_execution_id: {
+                type: "uuid",
+                references: "routine_execution(uuid)",
+                onDelete: "cascade",
+                default: null,
               },
               data: {
                 type: "jsonb",
@@ -1792,6 +1808,7 @@ export default class CadenzaDB {
                 "service_name",
                 "task_execution_id",
                 "service_instance_id",
+                "execution_trace_id",
                 "is_meta",
                 "emitted_at",
               ],
@@ -1828,6 +1845,12 @@ export default class CadenzaDB {
                 default: "gen_random_uuid()",
                 primary: true,
               },
+              signal_emission_id: {
+                type: "uuid",
+                required: true,
+                references: "signal_emission(uuid)",
+                onDelete: "cascade",
+              },
               task_name: {
                 type: "varchar",
                 required: true,
@@ -1839,6 +1862,10 @@ export default class CadenzaDB {
               signal_name: {
                 type: "varchar",
                 required: true,
+              },
+              signal_tag: {
+                type: "varchar",
+                default: null,
               },
               task_execution_id: {
                 type: "uuid",
@@ -1860,6 +1887,18 @@ export default class CadenzaDB {
                 references: "service_instance(uuid)",
                 onDelete: "cascade",
                 required: true,
+              },
+              execution_trace_id: {
+                type: "uuid",
+                references: "execution_trace(uuid)",
+                onDelete: "cascade",
+                default: null,
+              },
+              routine_execution_id: {
+                type: "uuid",
+                references: "routine_execution(uuid)",
+                onDelete: "cascade",
+                default: null,
               },
               is_meta: {
                 type: "boolean",
