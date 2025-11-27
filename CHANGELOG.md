@@ -1,3 +1,10 @@
+## [1.15.1](https://github.com/cadenzaio/cadenza-db/compare/v1.15.0...v1.15.1) (2025-11-27)
+
+
+### Bug Fixes
+
+* infinite loop. ([34e3bfa](https://github.com/cadenzaio/cadenza-db/commit/34e3bfa0172a18ad2798631579af8f7d5fb209aa))
+
 # [1.15.0](https://github.com/cadenzaio/cadenza-db/compare/v1.14.0...v1.15.0) (2025-11-27)
 
 
