@@ -6,6 +6,11 @@ export default class CadenzaDB {
     port?: number | undefined;
   }) {
     Cadenza.createEphemeralMetaTask("Start throttle sync", () => {
+      Cadenza.createMetaRoutine("Sync services", [
+        Cadenza.get("dbQueryServiceInstance")!,
+        Cadenza.get("dbQuerySignalToTaskMap")!,
+      ]).doOn("meta.cadenza_db.sync_tick");
+
       Cadenza.createUniqueMetaTask("Compile sync data and broadcast", (ctx) => {
         return {
           ...ctx.joinedContexts,
@@ -14,13 +19,12 @@ export default class CadenzaDB {
         .doAfter(
           Cadenza.createMetaTask(
             "Forward service instance sync",
-            (ctx) => true,
-          ).doOn("meta.service_instance.sync_queried"),
+            (ctx) => ctx.__syncing,
+          ).doAfter(Cadenza.get("dbQueryServiceInstance")!),
           Cadenza.createMetaTask(
             "Forward signal to task map sync",
-            (ctx) => true,
-          ).doOn("meta.signal_to_task_map.sync_queried"),
-          // TODO: other sync queries
+            (ctx) => ctx.__syncing,
+          ).doAfter(Cadenza.get("dbQuerySignalToTaskMap")!),
         )
         .emits("meta.cadenza_db.gathered_sync_data");
 
@@ -1276,27 +1280,6 @@ export default class CadenzaDB {
                   "meta.sync_controller.synced",
                   "*.meta.sync_controller.synced",
                 ],
-                query: [
-                  {
-                    signal: "meta.cadenza_db.sync_tick",
-                    queryData: {
-                      filter: {
-                        deleted: false,
-                        is_active: true,
-                        is_non_responsive: false,
-                        is_blocked: false,
-                      },
-                    },
-                  },
-                ],
-              },
-              emissions: {
-                query: [
-                  {
-                    signal: "meta.service_instance.sync_queried",
-                    condition: (ctx: any) => ctx.__syncing,
-                  },
-                ],
               },
             },
           },
@@ -1680,24 +1663,6 @@ export default class CadenzaDB {
                 update: [
                   // "meta.graph_metadata.task_unsubscribed_signal",
                   // "*.meta.graph_metadata.task_unsubscribed_signal",
-                ],
-                query: [
-                  {
-                    signal: "meta.cadenza_db.sync_tick",
-                    queryData: {
-                      filter: {
-                        deleted: false,
-                      },
-                    },
-                  },
-                ],
-              },
-              emissions: {
-                query: [
-                  {
-                    signal: "meta.signal_to_task_map.sync_queried",
-                    condition: (ctx: any) => ctx.__syncing,
-                  },
                 ],
               },
             },
