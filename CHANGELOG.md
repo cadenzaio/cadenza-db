@@ -1,3 +1,10 @@
+# [1.14.0](https://github.com/cadenzaio/cadenza-db/compare/v1.13.8...v1.14.0) (2025-11-27)
+
+
+### Features
+
+* Now syncing is done by pushing. ([ec08b83](https://github.com/cadenzaio/cadenza-db/commit/ec08b8394e304969114124ab4b6159b7c0de8e60))
+
 ## [1.13.8](https://github.com/cadenzaio/cadenza-db/compare/v1.13.7...v1.13.8) (2025-11-21)
 
 
