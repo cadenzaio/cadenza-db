@@ -1,3 +1,10 @@
+# [1.15.0](https://github.com/cadenzaio/cadenza-db/compare/v1.14.0...v1.15.0) (2025-11-27)
+
+
+### Features
+
+* improved syncing logic. ([7dc1c47](https://github.com/cadenzaio/cadenza-db/commit/7dc1c475ebdad775546a32535c63da2eaee15196))
+
 # [1.14.0](https://github.com/cadenzaio/cadenza-db/compare/v1.13.8...v1.14.0) (2025-11-27)
 
 
