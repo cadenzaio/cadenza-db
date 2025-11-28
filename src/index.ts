@@ -6,6 +6,8 @@ export default class CadenzaDB {
     port?: number | undefined;
   }) {
     Cadenza.createEphemeralMetaTask("Start throttle sync", () => {
+      Cadenza.log("Starting throttle sync...");
+
       Cadenza.createMetaRoutine("Sync services", [
         Cadenza.get("dbQueryServiceInstance")!,
         Cadenza.get("dbQuerySignalToTaskMap")!,
@@ -29,7 +31,7 @@ export default class CadenzaDB {
         .emits("meta.cadenza_db.gathered_sync_data");
 
       Cadenza.throttle("meta.cadenza_db.sync_tick", { __syncing: true }, 60000);
-    }).doOn("meta.created_database_service");
+    }).doOn("meta.sync_requested");
 
     Cadenza.createMetaDatabaseService(
       "CadenzaDB",
