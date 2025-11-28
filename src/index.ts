@@ -14,9 +14,11 @@ export default class CadenzaDB {
       ]).doOn("meta.cadenza_db.sync_tick");
 
       Cadenza.createUniqueMetaTask("Compile sync data and broadcast", (ctx) => {
-        return {
-          ...ctx.joinedContexts,
-        };
+        let joinedContext = {};
+        ctx.joinedContexts.forEach((ctx: any) => {
+          joinedContext = { ...joinedContext, ...ctx };
+        });
+        return joinedContext;
       })
         .doAfter(
           Cadenza.createMetaTask(
