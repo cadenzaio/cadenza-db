@@ -1665,11 +1665,6 @@ export default class CadenzaDB {
                 fields: ["task_name", "task_version", "service_name"],
                 referenceFields: ["name", "version", "service_name"],
               },
-              {
-                tableName: "signal_registry",
-                fields: ["signal_name", "service_name"],
-                referenceFields: ["name", "service_name"],
-              },
             ],
             customSignals: {
               triggers: {
@@ -1688,6 +1683,8 @@ export default class CadenzaDB {
               },
               signal_name: {
                 type: "varchar",
+                references: "signal_registry(name)",
+                onDelete: "cascade",
                 required: true,
               },
               signal_tag: {
@@ -1773,11 +1770,6 @@ export default class CadenzaDB {
             ],
             foreignKeys: [
               {
-                tableName: "signal_registry",
-                fields: ["signal_name", "service_name"],
-                referenceFields: ["name", "service_name"],
-              },
-              {
                 tableName: "task",
                 fields: ["task_name", "task_version", "service_name"],
                 referenceFields: ["name", "version", "service_name"],
@@ -1816,6 +1808,8 @@ export default class CadenzaDB {
               },
               signal_name: {
                 type: "varchar",
+                references: "signal_registry(name)",
+                onDelete: "cascade",
                 required: true,
               },
               signal_tag: {
@@ -1880,9 +1874,9 @@ export default class CadenzaDB {
             ],
             foreignKeys: [
               {
-                tableName: "signal_registry",
-                fields: ["signal_name", "service_name"],
-                referenceFields: ["name", "service_name"],
+                tableName: "task",
+                fields: ["task_name", "task_version", "service_name"],
+                referenceFields: ["name", "version", "service_name"],
               },
             ],
             customSignals: {
