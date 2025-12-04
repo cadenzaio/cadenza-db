@@ -1545,6 +1545,7 @@ export default class CadenzaDB {
               signal_name: {
                 type: "varchar",
                 references: "signal_registry(name)",
+                onDelete: "cascade",
                 required: true,
               },
               is_global: {
