@@ -1,3 +1,15 @@
+# [2.0.0](https://github.com/cadenzaio/cadenza-db/compare/v1.16.6...v2.0.0) (2025-12-04)
+
+
+### Bug Fixes
+
+* changed all signals ([806e0ab](https://github.com/cadenzaio/cadenza-db/commit/806e0abe61df7e074dbffac23e27b80c45fc17b2))
+
+
+### BREAKING CHANGES
+
+* Updates global signal protocol.
+
 ## [1.16.6](https://github.com/cadenzaio/cadenza-db/compare/v1.16.5...v1.16.6) (2025-11-28)
 
 
