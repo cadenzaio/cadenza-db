@@ -8,16 +8,12 @@ export default class CadenzaDB {
     Cadenza.createEphemeralMetaTask("Start throttle sync", () => {
       Cadenza.log("Starting throttle sync...");
 
-      Cadenza.createMetaRoutine("Sync services", [
-        Cadenza.get("dbQueryServiceInstance")!,
-        Cadenza.get("dbQuerySignalToTaskMap")!,
-      ]).doOn("meta.cadenza_db.sync_tick");
-
       Cadenza.createUniqueMetaTask("Compile sync data and broadcast", (ctx) => {
-        let joinedContext = {};
+        let joinedContext: any = {};
         ctx.joinedContexts.forEach((ctx: any) => {
           joinedContext = { ...joinedContext, ...ctx };
         });
+        joinedContext.__broadcast = true;
         return joinedContext;
       })
         .doAfter(
@@ -28,9 +24,24 @@ export default class CadenzaDB {
           Cadenza.createMetaTask(
             "Forward signal to task map sync",
             (ctx) => ctx.__syncing,
-          ).doAfter(Cadenza.get("dbQuerySignalToTaskMap")!),
+          ).doAfter(
+            Cadenza.get("dbQuerySignalToTaskMap")!.doAfter(
+              Cadenza.createMetaTask("Prepare for signal sync", (ctx) => {
+                ctx.filter = {
+                  isGlobal: true,
+                };
+
+                return ctx;
+              }),
+            ),
+          ),
         )
-        .emits("meta.cadenza_db.gathered_sync_data");
+        .emits("global.meta.cadenza_db.gathered_sync_data");
+
+      Cadenza.createMetaRoutine("Sync services", [
+        Cadenza.get("dbQueryServiceInstance")!,
+        Cadenza.get("Prepare for signal sync")!,
+      ]).doOn("meta.cadenza_db.sync_tick");
 
       Cadenza.throttle("meta.cadenza_db.sync_tick", { __syncing: true }, 60000);
     }).doOn("meta.sync_requested");
@@ -126,10 +137,7 @@ export default class CadenzaDB {
             uniqueConstraints: [["service_name"]],
             customSignals: {
               triggers: {
-                insert: [
-                  "meta.created_database_service",
-                  "*.meta.created_database_service",
-                ],
+                insert: ["global.meta.created_database_service"],
               },
             },
           },
@@ -337,16 +345,8 @@ export default class CadenzaDB {
             indexes: [["is_meta", "is_deputy", "generated_by"]],
             customSignals: {
               triggers: {
-                insert: [
-                  "meta.graph_metadata.task_created",
-                  "*.meta.graph_metadata.task_created",
-                  "meta.sync_controller.task_added",
-                  "*.meta.sync_controller.task_added",
-                ],
-                update: [
-                  "meta.graph_metadata.task_updated",
-                  "*.meta.graph_metadata.task_updated",
-                ],
+                insert: ["global.meta.graph_metadata.task_created"],
+                update: ["global.meta.graph_metadata.task_updated"],
               },
             },
           },
@@ -419,15 +419,9 @@ export default class CadenzaDB {
             customSignals: {
               triggers: {
                 insert: [
-                  "meta.graph_metadata.task_relationship_created",
-                  "*.meta.graph_metadata.task_relationship_created",
-                  "meta.sync_controller.task_map",
-                  "*.meta.sync_controller.task_map",
+                  "global.meta.graph_metadata.task_relationship_created",
                 ],
-                update: [
-                  "meta.graph_metadata.relationship_executed",
-                  "*.meta.graph_metadata.relationship_executed",
-                ],
+                update: ["global.meta.graph_metadata.relationship_executed"],
               },
             },
           },
@@ -473,15 +467,10 @@ export default class CadenzaDB {
             customSignals: {
               triggers: {
                 insert: [
-                  "meta.graph_metadata.routine_created",
-                  "*.meta.graph_metadata.routine_created",
-                  "meta.sync_controller.routine_added",
-                  "*.meta.sync_controller.routine_added",
+                  "global.meta.graph_metadata.routine_created",
+                  "global.meta.sync_controller.routine_added",
                 ],
-                update: [
-                  "meta.graph_metadata.routine_updated",
-                  "*.meta.graph_metadata.routine_updated",
-                ],
+                update: ["global.meta.graph_metadata.routine_updated"],
               },
             },
           },
@@ -537,10 +526,8 @@ export default class CadenzaDB {
             customSignals: {
               triggers: {
                 insert: [
-                  "meta.graph_metadata.task_added_to_routine",
-                  "*.meta.graph_metadata.task_added_to_routine",
-                  "meta.sync_controller.task_to_routine_map",
-                  "*.meta.sync_controller.task_to_routine_map",
+                  "global.meta.graph_metadata.task_added_to_routine",
+                  "global.meta.sync_controller.task_to_routine_map",
                 ],
               },
             },
@@ -869,16 +856,12 @@ export default class CadenzaDB {
             customSignals: {
               triggers: {
                 insert: [
-                  "meta.graph_metadata.routine_execution_created",
-                  "*.meta.graph_metadata.routine_execution_created",
+                  "global.meta.graph_metadata.routine_execution_created",
                 ],
                 update: [
-                  "meta.graph_metadata.routine_execution_started",
-                  "*.meta.graph_metadata.routine_execution_started",
-                  "meta.graph_metadata.routine_execution_ended",
-                  "*.meta.graph_metadata.routine_execution_ended",
-                  "meta.node.routine_execution_progress",
-                  "*.meta.node.routine_execution_progress",
+                  "global.meta.graph_metadata.routine_execution_started",
+                  "global.meta.graph_metadata.routine_execution_ended",
+                  // TODO progress
                 ],
               },
             },
@@ -1023,17 +1006,11 @@ export default class CadenzaDB {
             ],
             customSignals: {
               triggers: {
-                insert: [
-                  "meta.graph_metadata.task_execution_created",
-                  "*.meta.graph_metadata.task_execution_created",
-                ],
+                insert: ["global.meta.graph_metadata.task_execution_created"],
                 update: [
-                  "meta.graph_metadata.task_execution_started",
-                  "*.meta.graph_metadata.task_execution_started",
-                  "meta.graph_metadata.task_execution_ended",
-                  "*.meta.graph_metadata.task_execution_ended",
-                  "meta.node.progress", // Can this create race conditions?
-                  "*.meta.node.progress",
+                  "global.meta.graph_metadata.task_execution_started",
+                  "global.meta.graph_metadata.task_execution_ended",
+                  // TODO: progress
                 ],
               },
             },
@@ -1061,10 +1038,7 @@ export default class CadenzaDB {
             primaryKey: ["task_execution_id", "previous_task_execution_id"],
             customSignals: {
               triggers: {
-                insert: [
-                  "meta.graph_metadata.task_execution_mapped",
-                  "*.meta.graph_metadata.task_execution_mapped",
-                ],
+                insert: ["global.meta.graph_metadata.task_execution_mapped"],
               },
             },
           },
@@ -1179,10 +1153,7 @@ export default class CadenzaDB {
             },
             customSignals: {
               triggers: {
-                insert: [
-                  "meta.graph_metadata.execution_trace_created",
-                  "*.meta.graph_metadata.execution_trace_created",
-                ],
+                insert: ["global.meta.graph_metadata.execution_trace_created"],
               },
             },
           },
@@ -1275,14 +1246,11 @@ export default class CadenzaDB {
             ],
             customSignals: {
               triggers: {
-                insert: ["meta.rest.network_configured"],
+                insert: ["global.meta.rest.network_configured"],
                 update: [
-                  "meta.service_registry.service_handshake",
-                  "*.meta.service_registry.service_handshake",
-                  "meta.service_registry.service_not_responding",
-                  "*.meta.service_registry.service_not_responding",
-                  "meta.sync_controller.synced",
-                  "*.meta.sync_controller.synced",
+                  "global.meta.service_registry.service_handshake",
+                  "global.meta.service_registry.service_not_responding",
+                  "global.meta.sync_controller.synced",
                 ],
               },
             },
@@ -1397,10 +1365,7 @@ export default class CadenzaDB {
             ],
             customSignals: {
               triggers: {
-                insert: [
-                  "*.meta.fetch.service_communication_established",
-                  "meta.fetch.service_communication_established",
-                ],
+                insert: ["global.meta.fetch.service_communication_established"],
               },
             },
           },
@@ -1489,14 +1454,10 @@ export default class CadenzaDB {
             customSignals: {
               triggers: {
                 insert: [
-                  "meta.graph_metadata.deputy_relationship_created",
-                  "*.meta.graph_metadata.deputy_relationship_created",
-                  "meta.sync_controller.deputy_relationship_created",
-                  "*.meta.sync_controller.deputy_relationship_created",
+                  "global.meta.graph_metadata.deputy_relationship_created",
                 ],
                 update: [
-                  "meta.graph_metadata.explicit_relationship_executed",
-                  "*.meta.graph_metadata.explicit_relationship_executed",
+                  "global.meta.graph_metadata.explicit_relationship_executed",
                 ],
               },
             },
@@ -1525,8 +1486,7 @@ export default class CadenzaDB {
             customSignals: {
               triggers: {
                 insert: [
-                  "meta.graph_metadata.explicit_relationship_created",
-                  "*.meta.graph_metadata.explicit_relationship_created",
+                  "global.meta.graph_metadata.explicit_relationship_created",
                 ],
               },
             },
@@ -1536,14 +1496,14 @@ export default class CadenzaDB {
             fields: {
               name: {
                 type: "varchar",
-                required: true,
+                primary: true,
                 constraints: {
                   maxLength: 150,
                 },
               },
-              source_service_name: {
-                type: "varchar",
-                default: null,
+              is_global: {
+                type: "boolean",
+                default: false,
               },
               domain: {
                 type: "varchar",
@@ -1563,12 +1523,6 @@ export default class CadenzaDB {
                 type: "boolean",
                 default: false,
               },
-              service_name: {
-                type: "varchar",
-                references: "service(name)",
-                onDelete: "cascade",
-                required: true,
-              },
               created: {
                 type: "timestamp",
                 default: "now()",
@@ -1578,16 +1532,10 @@ export default class CadenzaDB {
                 default: false,
               },
             },
-            primaryKey: ["name", "service_name"],
-            indexes: [["is_meta", "domain", "action", "source_service_name"]],
+            indexes: [["is_meta", "domain", "action", "is_global"]],
             customSignals: {
               triggers: {
-                insert: [
-                  "meta.signal_controller.signal_added",
-                  "*.meta.signal_controller.signal_added",
-                  "meta.sync_controller.signal_added",
-                  "*.meta.sync_controller.signal_added",
-                ],
+                insert: ["global.meta.signal_controller.signal_added"],
               },
             },
           },
@@ -1596,7 +1544,12 @@ export default class CadenzaDB {
             fields: {
               signal_name: {
                 type: "varchar",
+                references: "signal_registry(name)",
                 required: true,
+              },
+              is_global: {
+                type: "boolean",
+                default: false,
               },
               task_name: {
                 type: "varchar",
@@ -1606,13 +1559,7 @@ export default class CadenzaDB {
                 type: "int",
                 default: 1,
               },
-              task_service_name: {
-                type: "varchar",
-                references: "service(name)",
-                onDelete: "cascade",
-                required: true,
-              },
-              signal_service_name: {
+              service_name: {
                 type: "varchar",
                 references: "service(name)",
                 onDelete: "cascade",
@@ -1641,29 +1588,18 @@ export default class CadenzaDB {
               "signal_name",
               "task_name",
               "task_version",
-              "task_service_name",
-              "signal_service_name",
+              "service_name",
             ],
             foreignKeys: [
               {
                 tableName: "task",
-                fields: ["task_name", "task_version", "task_service_name"],
+                fields: ["task_name", "task_version", "service_name"],
                 referenceFields: ["name", "version", "service_name"],
-              },
-              {
-                tableName: "signal_registry",
-                fields: ["signal_name", "signal_service_name"],
-                referenceFields: ["name", "service_name"],
               },
             ],
             customSignals: {
               triggers: {
-                insert: [
-                  "meta.graph_metadata.task_signal_observed",
-                  "*.meta.graph_metadata.task_signal_observed",
-                  "meta.sync_controller.signal_to_task_map",
-                  "*.meta.sync_controller.signal_to_task_map",
-                ],
+                insert: ["global.meta.graph_metadata.task_signal_observed"],
                 update: [
                   // "meta.graph_metadata.task_unsubscribed_signal",
                   // "*.meta.graph_metadata.task_unsubscribed_signal",
@@ -1680,6 +1616,8 @@ export default class CadenzaDB {
               },
               signal_name: {
                 type: "varchar",
+                references: "signal_registry(name)",
+                onDelete: "cascade",
                 required: true,
               },
               task_version: {
@@ -1735,16 +1673,8 @@ export default class CadenzaDB {
             ],
             customSignals: {
               triggers: {
-                insert: [
-                  "meta.graph_metadata.task_attached_signal",
-                  "*.meta.graph_metadata.task_attached_signal",
-                  "meta.sync_controller.task_to_signal_map",
-                  "*.meta.sync_controller.task_to_signal_map",
-                ],
-                update: [
-                  "meta.graph_metadata.task_detached_signal",
-                  "*.meta.graph_metadata.task_detached_signal",
-                ],
+                insert: ["global.meta.graph_metadata.task_attached_signal"],
+                update: ["global.meta.graph_metadata.task_detached_signal"],
               },
             },
           },
@@ -1855,10 +1785,7 @@ export default class CadenzaDB {
             ],
             customSignals: {
               triggers: {
-                insert: [
-                  "sub_meta.signal_controller.signal_emitted",
-                  "*.sub_meta.signal_controller.signal_emitted",
-                ],
+                insert: ["global.sub_meta.signal_controller.signal_emitted"],
               },
             },
             meta: {
@@ -1960,10 +1887,7 @@ export default class CadenzaDB {
             ],
             customSignals: {
               triggers: {
-                insert: [
-                  "sub_meta.signal_controller.signal_consumed",
-                  "*.sub_meta.signal_controller.signal_consumed",
-                ],
+                insert: ["global.sub_meta.signal_controller.signal_consumed"],
               },
             },
             meta: {
@@ -2251,7 +2175,7 @@ export default class CadenzaDB {
             ],
             customSignals: {
               triggers: {
-                insert: ["meta.system_log.log", "*.meta.system_log.log"],
+                insert: ["global.meta.system_log.log"],
               },
             },
           },
