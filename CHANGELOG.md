@@ -1,3 +1,10 @@
+## [2.0.1](https://github.com/cadenzaio/cadenza-db/compare/v2.0.0...v2.0.1) (2025-12-04)
+
+
+### Bug Fixes
+
+* signals tables. ([29594fa](https://github.com/cadenzaio/cadenza-db/commit/29594fa7030fe69e66851d81eada19b0bd5a3fbb))
+
 # [2.0.0](https://github.com/cadenzaio/cadenza-db/compare/v1.16.6...v2.0.0) (2025-12-04)
 
 
