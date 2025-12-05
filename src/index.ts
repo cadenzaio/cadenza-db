@@ -45,7 +45,12 @@ export default class CadenzaDB {
         Cadenza.get("Prepare for signal sync")!,
       ]).doOn("meta.cadenza_db.sync_tick");
 
-      Cadenza.throttle("meta.cadenza_db.sync_tick", { __syncing: true }, 60000);
+      Cadenza.throttle(
+        "meta.cadenza_db.sync_tick",
+        { __syncing: true },
+        60000,
+        true,
+      );
     }).doOn("meta.service_registry.instance_inserted");
 
     Cadenza.createMetaDatabaseService(
