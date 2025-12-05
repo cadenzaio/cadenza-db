@@ -31,6 +31,8 @@ export default class CadenzaDB {
                   isGlobal: true,
                 };
 
+                Cadenza.log("Syncing...");
+
                 return ctx;
               }),
             ),
@@ -44,7 +46,7 @@ export default class CadenzaDB {
       ]).doOn("meta.cadenza_db.sync_tick");
 
       Cadenza.throttle("meta.cadenza_db.sync_tick", { __syncing: true }, 60000);
-    }).doOn("meta.sync_requested");
+    }).doOn("meta.service_registry.instance_inserted");
 
     Cadenza.createMetaDatabaseService(
       "CadenzaDB",
@@ -1547,10 +1549,6 @@ export default class CadenzaDB {
                 references: "signal_registry(name)",
                 onDelete: "cascade",
                 required: true,
-              },
-              is_global: {
-                type: "boolean",
-                default: false,
               },
               task_name: {
                 type: "varchar",
