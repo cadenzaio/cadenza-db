@@ -1555,6 +1555,10 @@ export default class CadenzaDB {
                 onDelete: "cascade",
                 required: true,
               },
+              is_global: {
+                type: "boolean",
+                default: false,
+              },
               task_name: {
                 type: "varchar",
                 required: true,
