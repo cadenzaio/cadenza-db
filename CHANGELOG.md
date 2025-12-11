@@ -1,3 +1,10 @@
+## [2.2.2](https://github.com/cadenzaio/cadenza-db/compare/v2.2.1...v2.2.2) (2025-12-11)
+
+
+### Bug Fixes
+
+* task signal registration. ([0877f38](https://github.com/cadenzaio/cadenza-db/commit/0877f380bc02b50a2940dbad495ba348aa56f733))
+
 ## [2.2.1](https://github.com/cadenzaio/cadenza-db/compare/v2.2.0...v2.2.1) (2025-12-11)
 
 
