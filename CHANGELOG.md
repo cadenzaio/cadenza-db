@@ -1,3 +1,10 @@
+## [2.2.5](https://github.com/cadenzaio/cadenza-db/compare/v2.2.4...v2.2.5) (2025-12-11)
+
+
+### Bug Fixes
+
+* fixed circular reference ([832319a](https://github.com/cadenzaio/cadenza-db/commit/832319a4f4460f2e81408524b8a8f1d2c70929ce))
+
 ## [2.2.4](https://github.com/cadenzaio/cadenza-db/compare/v2.2.3...v2.2.4) (2025-12-11)
 
 
