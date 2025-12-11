@@ -960,9 +960,9 @@ export default class CadenzaDB {
                 default: 0.0,
               },
               signal_emission_id: {
+                // circular reference
+                // DEFERRABLE INITIALLY IMMEDIATE
                 type: "uuid",
-                references: "signal_emission(uuid)",
-                onDelete: "cascade",
                 default: null,
               },
               created: {
