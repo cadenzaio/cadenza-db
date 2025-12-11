@@ -429,7 +429,7 @@ export default class CadenzaDB {
                 fields: [
                   "predecessor_task_name",
                   "predecessor_task_version",
-                  "service_name",
+                  "predecessor_service_name",
                 ],
                 referenceFields: ["name", "version", "service_name"],
               },
