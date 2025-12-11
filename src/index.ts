@@ -330,7 +330,7 @@ export default class CadenzaDB {
                 type: "jsonb",
                 default: "'[]'",
               },
-              emits_signals_on_fail: {
+              signals_to_emit_on_fail: {
                 type: "jsonb",
                 default: "'[]'",
               },
