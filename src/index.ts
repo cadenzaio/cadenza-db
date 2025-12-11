@@ -334,7 +334,7 @@ export default class CadenzaDB {
                 type: "jsonb",
                 default: "'[]'",
               },
-              observes_signals: {
+              observed_signals: {
                 type: "jsonb",
                 default: "'[]'",
               },
