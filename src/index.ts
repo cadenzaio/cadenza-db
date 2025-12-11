@@ -322,21 +322,9 @@ export default class CadenzaDB {
                 type: "boolean",
                 default: false,
               },
-              emits_signals: {
+              signals: {
                 type: "jsonb",
-                default: "'[]'",
-              },
-              signals_to_emit_after: {
-                type: "jsonb",
-                default: "'[]'",
-              },
-              signals_to_emit_on_fail: {
-                type: "jsonb",
-                default: "'[]'",
-              },
-              observed_signals: {
-                type: "jsonb",
-                default: "'[]'",
+                default: "'{}'",
               },
               flags: {
                 type: "jsonb",
@@ -1546,7 +1534,7 @@ export default class CadenzaDB {
                 onDelete: "cascade",
                 default: null,
               },
-              data: {
+              context: {
                 type: "jsonb",
                 default: "'{}'",
               },
