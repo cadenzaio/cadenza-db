@@ -1,3 +1,10 @@
+## [2.2.3](https://github.com/cadenzaio/cadenza-db/compare/v2.2.2...v2.2.3) (2025-12-11)
+
+
+### Bug Fixes
+
+* task map bug ([9b421d6](https://github.com/cadenzaio/cadenza-db/commit/9b421d6d69647216eb981d1a0a0a19faee2f91f8))
+
 ## [2.2.2](https://github.com/cadenzaio/cadenza-db/compare/v2.2.1...v2.2.2) (2025-12-11)
 
 
