@@ -1,3 +1,10 @@
+# [2.1.0](https://github.com/cadenzaio/cadenza-db/compare/v2.0.14...v2.1.0) (2025-12-11)
+
+
+### Features
+
+* refactored tables ([8900fab](https://github.com/cadenzaio/cadenza-db/commit/8900fab8ddfbf6165470a9e157a833f35e7a8e4a))
+
 ## [2.0.14](https://github.com/cadenzaio/cadenza-db/compare/v2.0.13...v2.0.14) (2025-12-09)
 
 
