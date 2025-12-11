@@ -1,3 +1,10 @@
+## [2.2.1](https://github.com/cadenzaio/cadenza-db/compare/v2.2.0...v2.2.1) (2025-12-11)
+
+
+### Bug Fixes
+
+* typo fix ([ede02f5](https://github.com/cadenzaio/cadenza-db/commit/ede02f5a21acbf02e293c838262ade2b0d2a3f46))
+
 # [2.2.0](https://github.com/cadenzaio/cadenza-db/compare/v2.1.0...v2.2.0) (2025-12-11)
 
 
