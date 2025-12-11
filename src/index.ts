@@ -322,6 +322,22 @@ export default class CadenzaDB {
                 type: "boolean",
                 default: false,
               },
+              emits_signals: {
+                type: "jsonb",
+                default: "'[]'",
+              },
+              signals_to_emit_after: {
+                type: "jsonb",
+                default: "'[]'",
+              },
+              emits_signals_on_fail: {
+                type: "jsonb",
+                default: "'[]'",
+              },
+              observes_signals: {
+                type: "jsonb",
+                default: "'[]'",
+              },
               flags: {
                 type: "jsonb",
                 default: "'{}'",
@@ -382,6 +398,12 @@ export default class CadenzaDB {
                 onDelete: "cascade",
                 required: true,
               },
+              predecessor_service_name: {
+                type: "varchar",
+                references: "service(name)",
+                onDelete: "cascade",
+                required: true,
+              },
               execution_count: {
                 type: "int",
                 required: true,
@@ -406,6 +428,7 @@ export default class CadenzaDB {
               "task_version",
               "predecessor_task_version",
               "service_name",
+              "predecessor_service_name",
             ],
             foreignKeys: [
               {
@@ -708,38 +731,6 @@ export default class CadenzaDB {
             indexes: [["field_type"]],
           },
 
-          context: {
-            fields: {
-              uuid: {
-                type: "uuid",
-                default: "gen_random_uuid()",
-                primary: true,
-              },
-              context: {
-                type: "jsonb", // TODO: change to bytea
-                required: true,
-              },
-              context_schema_id: {
-                type: "uuid",
-                references: "context_schema(uuid)",
-                onDelete: "set null",
-                default: null,
-              },
-              is_meta: {
-                type: "boolean",
-                default: false,
-              },
-              created: {
-                type: "timestamp",
-                default: "now()",
-              },
-            },
-            indexes: [["context_schema_id", "is_meta"]],
-            meta: {
-              appendOnly: true,
-            },
-          },
-
           routine_execution: {
             fields: {
               uuid: {
@@ -773,17 +764,21 @@ export default class CadenzaDB {
                 onDelete: "cascade",
                 default: null,
               },
-              context_id: {
-                type: "uuid",
-                references: "context(uuid)",
-                onDelete: "cascade",
-                required: true,
+              context: {
+                type: "jsonb", // TODO: change to bytea?
+                default: "'{}'",
               },
-              result_context_id: {
-                type: "uuid",
-                references: "context(uuid)",
-                onDelete: "cascade",
-                default: null,
+              meta_context: {
+                type: "jsonb", // TODO: change to bytea?
+                default: "'{}'",
+              },
+              result_context: {
+                type: "jsonb", // TODO: change to bytea?
+                default: "'{}'",
+              },
+              meta_result_context: {
+                type: "jsonb", // TODO: change to bytea?
+                default: "'{}'",
               },
               is_scheduled: {
                 type: "boolean",
@@ -901,17 +896,21 @@ export default class CadenzaDB {
                 onDelete: "cascade",
                 required: true,
               },
-              context_id: {
-                type: "uuid",
-                references: "context(uuid)",
-                onDelete: "cascade",
-                required: true,
+              context: {
+                type: "jsonb",
+                default: "'{}'",
               },
-              result_context_id: {
-                type: "uuid",
-                references: "context(uuid)",
-                onDelete: "cascade",
-                default: null,
+              meta_context: {
+                type: "jsonb",
+                default: "'{}'",
+              },
+              result_context: {
+                type: "jsonb",
+                default: "'{}'",
+              },
+              meta_result_context: {
+                type: "jsonb",
+                default: "'{}'",
               },
               split_group_id: {
                 type: "uuid",
@@ -972,6 +971,12 @@ export default class CadenzaDB {
                 },
                 default: 0.0,
               },
+              signal_emission_id: {
+                type: "uuid",
+                references: "signal_emission(uuid)",
+                onDelete: "cascade",
+                default: null,
+              },
               created: {
                 type: "timestamp",
                 default: "now()",
@@ -992,9 +997,6 @@ export default class CadenzaDB {
             indexes: [
               [
                 "routine_execution_id",
-                "task_name",
-                "task_version",
-                "service_name",
                 "service_instance_id",
                 "execution_trace_id",
                 "is_meta",
@@ -1101,11 +1103,13 @@ export default class CadenzaDB {
                 required: false,
                 default: null,
               },
-              context_id: {
-                type: "uuid",
-                references: "context(uuid)",
-                onDelete: "cascade",
-                required: true,
+              context: {
+                type: "jsonb",
+                default: "'{}'",
+              },
+              meta_context: {
+                type: "jsonb",
+                default: "'{}'",
               },
               intent: {
                 type: "varchar",
@@ -1377,128 +1381,6 @@ export default class CadenzaDB {
             },
           },
 
-          deputy_task_map: {
-            fields: {
-              deputy_task_name: {
-                type: "varchar",
-                required: true,
-              },
-              deputy_task_version: {
-                type: "int",
-                default: 1,
-              },
-              triggered_task_name: {
-                type: "varchar",
-                required: true,
-              },
-              triggered_task_version: {
-                // TODO
-                type: "int",
-                default: 1,
-              },
-              deputy_service_name: {
-                type: "varchar",
-                references: "service(name)",
-                onDelete: "cascade",
-                required: true,
-              },
-              triggered_service_name: {
-                type: "varchar",
-                references: "service(name)",
-                onDelete: "cascade",
-                required: true,
-              },
-              last_executed: {
-                type: "timestamp",
-                default: null,
-              },
-              execution_count: {
-                type: "int",
-                required: true,
-                constraints: {
-                  min: 0,
-                  max: 2147483647,
-                },
-                default: 0,
-              },
-              created: {
-                type: "timestamp",
-                default: "now()",
-              },
-              deleted: {
-                type: "boolean",
-                default: false,
-              },
-            },
-            primaryKey: [
-              "deputy_task_name",
-              "triggered_task_name",
-              "deputy_task_version",
-              "triggered_task_version",
-              "deputy_service_name",
-              "triggered_service_name",
-            ],
-            foreignKeys: [
-              {
-                tableName: "task",
-                fields: [
-                  "deputy_task_name",
-                  "deputy_task_version",
-                  "deputy_service_name",
-                ],
-                referenceFields: ["name", "version", "service_name"],
-              },
-              {
-                tableName: "task",
-                fields: [
-                  "triggered_task_name",
-                  "triggered_task_version",
-                  "triggered_service_name",
-                ],
-                referenceFields: ["name", "version", "service_name"],
-              },
-            ],
-            customSignals: {
-              triggers: {
-                insert: [
-                  "global.meta.graph_metadata.deputy_relationship_created",
-                ],
-                update: [
-                  "global.meta.graph_metadata.explicit_relationship_executed",
-                ],
-              },
-            },
-          },
-
-          deputy_task_execution_map: {
-            fields: {
-              deputy_task_execution_id: {
-                type: "uuid",
-                references: "task_execution(uuid)",
-                onDelete: "cascade",
-                required: true,
-              },
-              task_execution_id: {
-                type: "uuid",
-                references: "task_execution(uuid)",
-                onDelete: "cascade",
-                required: true,
-              },
-              created: {
-                type: "timestamp",
-                default: "now()",
-              },
-            },
-            primaryKey: ["deputy_task_execution_id", "task_execution_id"],
-            customSignals: {
-              triggers: {
-                insert: [
-                  "global.meta.graph_metadata.explicit_relationship_created",
-                ],
-              },
-            },
-          },
-
           signal_registry: {
             fields: {
               name: {
@@ -1573,16 +1455,6 @@ export default class CadenzaDB {
                 onDelete: "cascade",
                 required: true,
               },
-              last_emitted: {
-                // TODO
-                type: "timestamp",
-                default: "now()",
-              },
-              emit_count: {
-                // TODO
-                type: "int",
-                default: 0,
-              },
               created: {
                 type: "timestamp",
                 default: "now()",
@@ -1612,72 +1484,6 @@ export default class CadenzaDB {
                   // "meta.graph_metadata.task_unsubscribed_signal",
                   // "*.meta.graph_metadata.task_unsubscribed_signal",
                 ],
-              },
-            },
-          },
-
-          task_to_signal_map: {
-            fields: {
-              task_name: {
-                type: "varchar",
-                required: true,
-              },
-              signal_name: {
-                type: "varchar",
-                references: "signal_registry(name)",
-                onDelete: "cascade",
-                required: true,
-              },
-              task_version: {
-                type: "int",
-                default: 1,
-              },
-              service_name: {
-                type: "varchar",
-                references: "service(name)",
-                onDelete: "cascade",
-                required: true,
-              },
-              is_on_fail: {
-                type: "boolean",
-                default: false,
-              },
-              last_emitted: {
-                // TODO
-                type: "timestamp",
-                default: "now()",
-              },
-              emit_count: {
-                // TODO
-                type: "int",
-                default: 0,
-              },
-              created: {
-                type: "timestamp",
-                default: "now()",
-              },
-              deleted: {
-                type: "boolean",
-                default: false,
-              },
-            },
-            primaryKey: [
-              "task_name",
-              "signal_name",
-              "task_version",
-              "service_name",
-            ],
-            foreignKeys: [
-              {
-                tableName: "task",
-                fields: ["task_name", "task_version", "service_name"],
-                referenceFields: ["name", "version", "service_name"],
-              },
-            ],
-            customSignals: {
-              triggers: {
-                insert: ["global.meta.graph_metadata.task_attached_signal"],
-                update: ["global.meta.graph_metadata.task_detached_signal"],
               },
             },
           },
@@ -1786,110 +1592,6 @@ export default class CadenzaDB {
             customSignals: {
               triggers: {
                 insert: ["global.sub_meta.signal_controller.signal_emitted"],
-              },
-            },
-            meta: {
-              appendOnly: true,
-            },
-          },
-
-          signal_consumption: {
-            fields: {
-              uuid: {
-                type: "uuid",
-                default: "gen_random_uuid()",
-                primary: true,
-              },
-              signal_emission_id: {
-                type: "uuid",
-                required: true,
-                references: "signal_emission(uuid)",
-                onDelete: "cascade",
-              },
-              task_name: {
-                type: "varchar",
-                required: true,
-              },
-              task_version: {
-                type: "int",
-                default: 1,
-              },
-              signal_name: {
-                type: "varchar",
-                references: "signal_registry(name)",
-                onDelete: "cascade",
-                required: true,
-              },
-              signal_tag: {
-                type: "varchar",
-                default: null,
-              },
-              task_execution_id: {
-                type: "uuid",
-                references: "task_execution(uuid)",
-                onDelete: "cascade",
-                required: true,
-              },
-              service_name: {
-                type: "varchar",
-                references: "service(name)",
-                onDelete: "cascade",
-                required: true,
-                constraints: {
-                  maxLength: 100,
-                },
-              },
-              service_instance_id: {
-                type: "uuid",
-                references: "service_instance(uuid)",
-                onDelete: "cascade",
-                required: true,
-              },
-              execution_trace_id: {
-                type: "uuid",
-                references: "execution_trace(uuid)",
-                onDelete: "cascade",
-                default: null,
-              },
-              routine_execution_id: {
-                type: "uuid",
-                references: "routine_execution(uuid)",
-                onDelete: "cascade",
-                default: null,
-              },
-              is_meta: {
-                type: "boolean",
-                default: false,
-              },
-              consumed_at: {
-                type: "timestamp",
-                default: "now()",
-              },
-              created: {
-                type: "timestamp",
-                default: "now()",
-              },
-            },
-            indexes: [
-              [
-                "signal_name",
-                "service_name",
-                "service_instance_id",
-                "task_execution_id",
-                "is_meta",
-                "consumed_at",
-              ],
-            ],
-            foreignKeys: [
-              {
-                tableName: "task",
-                fields: ["task_name", "task_version", "service_name"],
-                referenceFields: ["name", "version", "service_name"],
-              },
-            ],
-            customSignals: {
-              triggers: {
-                insert: ["global.sub_meta.signal_controller.signal_consumed"],
               },
             },
             meta: {
