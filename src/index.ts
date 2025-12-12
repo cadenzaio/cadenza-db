@@ -8,6 +8,19 @@ export default class CadenzaDB {
     Cadenza.createEphemeralMetaTask("Start throttle sync", () => {
       Cadenza.log("Starting throttle sync...");
 
+      const prepareSignalSyncTask = Cadenza.createMetaTask(
+        "Prepare for signal sync",
+        (ctx) => {
+          ctx.filter = {
+            isGlobal: true,
+          };
+
+          Cadenza.log("Syncing...");
+
+          return ctx;
+        },
+      );
+
       Cadenza.createUniqueMetaTask("Compile sync data and broadcast", (ctx) => {
         let joinedContext: any = {};
         ctx.joinedContexts.forEach((ctx: any) => {
@@ -26,15 +39,7 @@ export default class CadenzaDB {
             (ctx) => ctx.__syncing,
           ).doAfter(
             Cadenza.get("dbQuerySignalToTaskMap")!.doAfter(
-              Cadenza.createMetaTask("Prepare for signal sync", (ctx) => {
-                ctx.filter = {
-                  isGlobal: true,
-                };
-
-                Cadenza.log("Syncing...");
-
-                return ctx;
-              }),
+              prepareSignalSyncTask,
             ),
           ),
         )
@@ -42,7 +47,7 @@ export default class CadenzaDB {
 
       Cadenza.createMetaRoutine("Sync services", [
         Cadenza.get("dbQueryServiceInstance")!,
-        Cadenza.get("Prepare for signal sync")!,
+        prepareSignalSyncTask,
       ]).doOn("meta.cadenza_db.sync_tick");
 
       Cadenza.throttle(
