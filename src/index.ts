@@ -56,7 +56,7 @@ export default class CadenzaDB {
         60000,
         true,
       );
-    }).doOn("meta.service_registry.instance_inserted");
+    }).doOn("global.meta.sync_controller.synced");
 
     Cadenza.createMetaDatabaseService(
       "CadenzaDB",
@@ -485,7 +485,7 @@ export default class CadenzaDB {
                 default: false,
               },
             },
-            indexes: [["is_meta", "service_name"]],
+            indexes: [["is_meta"]],
             primaryKey: ["name", "service_name", "version"],
             customSignals: {
               triggers: {
