@@ -1,3 +1,10 @@
+## [2.2.13](https://github.com/cadenzaio/cadenza-db/compare/v2.2.12...v2.2.13) (2025-12-21)
+
+
+### Bug Fixes
+
+* package update ([dd62297](https://github.com/cadenzaio/cadenza-db/commit/dd62297233f421c18cceb4069d74baee87d7ebc1))
+
 ## [2.2.12](https://github.com/cadenzaio/cadenza-db/compare/v2.2.11...v2.2.12) (2025-12-19)
 
 
