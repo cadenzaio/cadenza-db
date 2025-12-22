@@ -50,7 +50,7 @@ export default class CadenzaDB {
         prepareSignalSyncTask,
       ]).doOn("meta.cadenza_db.sync_tick");
 
-      Cadenza.throttle(
+      Cadenza.interval(
         "meta.cadenza_db.sync_tick",
         { __syncing: true },
         60000,
