@@ -922,6 +922,10 @@ export default class CadenzaDB {
                 onDelete: "cascade",
                 required: true,
               },
+              previous_execution_ids: {
+                type: "jsonb",
+                default: "'{}'",
+              },
               is_scheduled: {
                 type: "boolean",
                 default: true,
