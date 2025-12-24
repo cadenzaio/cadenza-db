@@ -1,3 +1,10 @@
+## [2.2.22](https://github.com/cadenzaio/cadenza-db/compare/v2.2.21...v2.2.22) (2025-12-24)
+
+
+### Bug Fixes
+
+* package update. added intents to tasks ([64439b3](https://github.com/cadenzaio/cadenza-db/commit/64439b3943d0d921fb5be0e93b1be473d4a82e16))
+
 ## [2.2.21](https://github.com/cadenzaio/cadenza-db/compare/v2.2.20...v2.2.21) (2025-12-23)
 
 
