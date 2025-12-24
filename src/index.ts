@@ -331,6 +331,10 @@ export default class CadenzaDB {
                 type: "jsonb",
                 default: "'{}'",
               },
+              intents: {
+                type: "jsonb",
+                default: "'{}'",
+              },
               flags: {
                 type: "jsonb",
                 default: "'{}'",
