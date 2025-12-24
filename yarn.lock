@@ -16,20 +16,20 @@
   resolved "https://registry.yarnpkg.com/@babel/helper-validator-identifier/-/helper-validator-identifier-7.28.5.tgz#010b6938fab7cb7df74aa2bbc06aa503b8fe5fb4"
   integrity sha512-qSs4ifwzKJSV39ucNjsvc6WVHs6b7S03sOh2OcHF9UHfVPqWWALUsNUVzhSBiItjRZoLHx7nIarVjqKVusUZ1Q==
 
-"@cadenza.io/core@^3.16.4":
-  version "3.16.4"
-  resolved "https://registry.yarnpkg.com/@cadenza.io/core/-/core-3.16.4.tgz#8b42e5f11560f8bfa66f366bf78e0f0f9bebbef8"
-  integrity sha512-ppzfIRC4PAtuLXlX0Br/rX5PcezZEuvQQCw2aAqAb+buSxAzLSlc1OzIZYaRfTK1VE/O0xMByFMIKq51T34+PQ==
+"@cadenza.io/core@^3.17.0":
+  version "3.17.0"
+  resolved "https://registry.yarnpkg.com/@cadenza.io/core/-/core-3.17.0.tgz#ed294694fdba1719c4cbb03e1236992f71d95ea3"
+  integrity sha512-uIvgFg58Nuob+V2YaH+Xv5Eqx0XG7CSQ2eKgqjk8gdXK6pfEWAGox14T9u+xry3kQnLWtjVoqUQqEwIEMQb51A==
   dependencies:
     "@types/uuid" "^10.0.0"
     uuid "^10.0.0"
 
-"@cadenza.io/service@2.0.33":
-  version "2.0.33"
-  resolved "https://registry.yarnpkg.com/@cadenza.io/service/-/service-2.0.33.tgz#8058c9bae67dedff2142f3c2b0d296088d899320"
-  integrity sha512-aAvTRqcBwhLkL7ISUVo4cK1jiuWEs205UY8/x/9LC21qbHBQrF431HDZxFcsHoMypEwTUEZFL83VIy4y8TIY5A==
+"@cadenza.io/service@2.0.34":
+  version "2.0.34"
+  resolved "https://registry.yarnpkg.com/@cadenza.io/service/-/service-2.0.34.tgz#b35354e8c0c886e874689190ac5cfcee9b2283d8"
+  integrity sha512-ifM/YdbepOKeSkxt+6giRYNmYzX5OYHLXf8hkfknvvCi79I/mVWFxougE7dgrvtYXtbsyatoDKSpnP78uFxI1g==
   dependencies:
-    "@cadenza.io/core" "^3.16.4"
+    "@cadenza.io/core" "^3.17.0"
     "@types/pg" "^8.15.4"
     "@types/uuid" "^10.0.0"
     body-parser "^2.2.0"
