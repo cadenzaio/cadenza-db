@@ -58,6 +58,8 @@ export default class CadenzaDB {
       );
     }).doOn("global.meta.sync_controller.synced");
 
+    console.log("Creating CadenzaDB service");
+
     Cadenza.createMetaDatabaseService(
       "CadenzaDB",
       {
