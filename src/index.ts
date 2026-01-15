@@ -1715,7 +1715,7 @@ export default class CadenzaDB {
               name: {
                 type: "varchar",
                 required: true,
-                references: "inquiry_registry(name)",
+                references: "intent_registry(name)",
                 onDelete: "cascade",
               },
               task_name: {
