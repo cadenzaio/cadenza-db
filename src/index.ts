@@ -1,7 +1,7 @@
 import Cadenza from "@cadenza.io/service";
 
 export default class CadenzaDB {
-  static createCadenzaDBService(options: {
+  static createCadenzaDBService(options?: {
     dropExisting?: boolean;
     port?: number | undefined;
   }) {
@@ -978,6 +978,12 @@ export default class CadenzaDB {
                 onDelete: "cascade",
                 default: null,
               },
+              inquiry_id: {
+                type: "uuid",
+                references: "inquiry(uuid)",
+                onDelete: "cascade",
+                default: null,
+              },
               created: {
                 type: "timestamp",
                 default: "now()",
@@ -1600,6 +1606,202 @@ export default class CadenzaDB {
             },
           },
 
+          intent_registry: {
+            fields: {
+              name: {
+                type: "varchar",
+                primary: true,
+                constraints: {
+                  maxLength: 100,
+                },
+              },
+              description: {
+                type: "text",
+                default: "",
+              },
+              input: {
+                type: "jsonb",
+                default: '\'{"type": "object"}\'',
+              },
+              output: {
+                type: "jsonb",
+                default: '\'{"type": "object"}\'',
+              },
+              is_meta: {
+                type: "boolean",
+                default: false,
+              },
+              created: {
+                type: "timestamp",
+                default: "now()",
+              },
+              deleted: {
+                type: "boolean",
+                default: false,
+              },
+            },
+            indexes: [["is_meta"]],
+            customSignals: {
+              triggers: {
+                insert: ["global.meta.graph_metadata.intent_created"],
+                update: ["global.meta.graph_metadata.intent_updated"],
+              },
+            },
+          },
+
+          intent_to_task_map: {
+            fields: {
+              intent_name: {
+                type: "varchar",
+                required: true,
+                references: "intent_registry(name)",
+                onDelete: "cascade",
+              },
+              task_name: {
+                type: "varchar",
+                required: true,
+              },
+              task_version: {
+                type: "int",
+                default: 1,
+              },
+              service_name: {
+                type: "varchar",
+                references: "service(name)",
+                onDelete: "cascade",
+                required: true,
+                constraints: {
+                  maxLength: 100,
+                },
+              },
+              created: {
+                type: "timestamp",
+                default: "now()",
+              },
+              deleted: {
+                type: "boolean",
+                default: false,
+              },
+            },
+            primaryKey: [
+              "intent_name",
+              "task_name",
+              "task_version",
+              "service_name",
+            ],
+            foreignKeys: [
+              {
+                tableName: "task",
+                fields: ["task_name", "task_version", "service_name"],
+                referenceFields: ["name", "version", "service_name"],
+              },
+            ],
+            customSignals: {
+              triggers: {
+                insert: ["global.meta.graph_metadata.task_intent_associated"],
+              },
+            },
+          },
+
+          inquiry: {
+            fields: {
+              uuid: {
+                type: "uuid",
+                default: "gen_random_uuid()",
+                primary: true,
+              },
+              name: {
+                type: "varchar",
+                required: true,
+                references: "inquiry_registry(name)",
+                onDelete: "cascade",
+              },
+              task_name: {
+                type: "varchar",
+                default: null,
+              },
+              task_version: {
+                type: "int",
+                default: null,
+              },
+              task_execution_id: {
+                // circular reference
+                // DEFERRABLE INITIALLY IMMEDIATE
+                type: "uuid",
+                default: null,
+              },
+              service_name: {
+                type: "varchar",
+                references: "service(name)",
+                onDelete: "cascade",
+                required: true,
+                constraints: {
+                  maxLength: 100,
+                },
+              },
+              service_instance_id: {
+                type: "uuid",
+                references: "service_instance(uuid)",
+                onDelete: "cascade",
+                required: true,
+              },
+              execution_trace_id: {
+                type: "uuid",
+                references: "execution_trace(uuid)",
+                onDelete: "cascade",
+                default: null,
+              },
+              routine_execution_id: {
+                type: "uuid",
+                references: "routine_execution(uuid)",
+                onDelete: "cascade",
+                default: null,
+              },
+              context: {
+                type: "jsonb",
+                default: "'{}'",
+              },
+              metadata: {
+                type: "jsonb",
+                default: "'{}'",
+              },
+              is_meta: {
+                type: "boolean",
+                default: false,
+              },
+              sent_at: {
+                type: "timestamp",
+                default: "now()",
+              },
+              fulfilled_at: {
+                type: "timestamp",
+                default: null,
+              },
+              duration: {
+                type: "int",
+                default: 0,
+              },
+              created: {
+                type: "timestamp",
+                default: "now()",
+              },
+            },
+            indexes: [["is_meta", "task_execution_id"]],
+            foreignKeys: [
+              {
+                tableName: "task",
+                fields: ["task_name", "task_version", "service_name"],
+                referenceFields: ["name", "version", "service_name"],
+              },
+            ],
+            customSignals: {
+              triggers: {
+                insert: ["global.meta.graph_metadata.inquiry_created"],
+                update: ["global.meta.graph_metadata.inquiry_updated"],
+              },
+            },
+          },
+
           schedule_registry: {
             // TODO
             fields: {
@@ -1886,7 +2088,7 @@ export default class CadenzaDB {
           },
         },
         meta: {
-          dropExisting: options.dropExisting ?? false,
+          dropExisting: options?.dropExisting ?? false,
         },
       },
       "This is the official CadenzaDB database service. It is used to store metadata and execution data from the Cadenza framework.",
@@ -1896,8 +2098,12 @@ export default class CadenzaDB {
         databaseType: "postgres",
         databaseName: "cadenza_db",
         poolSize: 50,
-        port: options.port ?? parseInt(process.env.HTTP_PORT ?? "8080"),
+        port: options?.port ?? parseInt(process.env.HTTP_PORT ?? "8080"),
       },
     );
   }
+}
+
+if (process.env.NODE_ENV === "production") {
+  CadenzaDB.createCadenzaDBService();
 }
