@@ -61,7 +61,7 @@
   "author": "Emil Forsvall",
   "license": "ISC",
   "dependencies": {
-    "@cadenza.io/service": "2.2.1"
+    "@cadenza.io/service": "2.2.2"
   },
   "devDependencies": {
     "@commitlint/cli": "^19.8.0",
