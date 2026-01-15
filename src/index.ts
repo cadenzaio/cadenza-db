@@ -5,6 +5,18 @@ export default class CadenzaDB {
     dropExisting?: boolean;
     port?: number | undefined;
   }) {
+    const dns = require("dns").promises;
+    (async () => {
+      try {
+        const addresses = await dns.resolve(
+          "aws-1-eu-west-1.pooler.supabase.com",
+        );
+        console.log("DNS resolved:", addresses);
+      } catch (err: any) {
+        console.error("DNS error:", err.message);
+      }
+    })();
+
     Cadenza.createEphemeralMetaTask("Start throttle sync", () => {
       Cadenza.log("Starting throttle sync...");
 
