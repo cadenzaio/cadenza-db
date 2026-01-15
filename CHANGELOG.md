@@ -1,3 +1,10 @@
+# [2.3.0](https://github.com/cadenzaio/cadenza-db/compare/v2.2.25...v2.3.0) (2026-01-15)
+
+
+### Features
+
+* Added intent and inquiry. ([1b710ea](https://github.com/cadenzaio/cadenza-db/commit/1b710ea6ed5f7665f994953c508b611c555f44e1))
+
 ## [2.2.25](https://github.com/cadenzaio/cadenza-db/compare/v2.2.24...v2.2.25) (2025-12-26)
 
 
