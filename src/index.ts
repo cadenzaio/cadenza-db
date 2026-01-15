@@ -5,26 +5,6 @@ export default class CadenzaDB {
     dropExisting?: boolean;
     port?: number | undefined;
   }) {
-    const dns = require("dns").promises;
-    console.log(
-      "Attempting DB connection with URL:",
-      process.env.DATABASE_ADDRESS,
-    ); // REDACT password in logs if needed
-    const { Client } = require("pg"); // or Pool, etc.
-    const client = new Client({
-      connectionString: process.env.DATABASE_ADDRESS,
-      ssl: { rejectUnauthorized: false },
-    });
-    client.connect((err: any) => {
-      if (err) {
-        console.error("Connection error details:", err);
-        console.error("Full stack:", err.stack);
-      } else {
-        console.log("Connected successfully!");
-      }
-      client.end();
-    });
-
     Cadenza.createEphemeralMetaTask("Start throttle sync", () => {
       Cadenza.log("Starting throttle sync...");
 
