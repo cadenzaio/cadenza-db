@@ -13,6 +13,7 @@ export default class CadenzaDB {
     const { Client } = require("pg"); // or Pool, etc.
     const client = new Client({
       connectionString: process.env.DATABASE_ADDRESS,
+      ssl: { rejectUnauthorized: false },
     });
     client.connect((err: any) => {
       if (err) {
