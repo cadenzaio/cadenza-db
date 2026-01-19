@@ -15,8 +15,6 @@ export default class CadenzaDB {
             isGlobal: true,
           };
 
-          Cadenza.log("Syncing...");
-
           return ctx;
         },
       );
