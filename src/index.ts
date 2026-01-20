@@ -1269,6 +1269,7 @@ export default class CadenzaDB {
                   "global.meta.service_registry.service_handshake",
                   "global.meta.service_registry.service_not_responding",
                   "global.meta.sync_controller.synced",
+                  "global.meta.service_registry.deleted",
                 ],
               },
             },
