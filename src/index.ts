@@ -25,6 +25,7 @@ export default class CadenzaDB {
           joinedContext = { ...joinedContext, ...ctx };
         });
         joinedContext.__broadcast = true;
+        console.log("Compiling sync data and broadcast...");
         return joinedContext;
       })
         .doAfter(
