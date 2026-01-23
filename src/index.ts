@@ -1,10 +1,17 @@
 import Cadenza from "@cadenza.io/service";
 
+let CREATED = false;
+
 export default class CadenzaDB {
   static createCadenzaDBService(options?: {
     dropExisting?: boolean;
     port?: number | undefined;
   }) {
+    if (CREATED) {
+      return;
+    }
+
+    CREATED = true;
     Cadenza.createEphemeralMetaTask("Start throttle sync", () => {
       Cadenza.log("Starting throttle sync...");
 
