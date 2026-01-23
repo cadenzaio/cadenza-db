@@ -24,10 +24,10 @@
     "@types/uuid" "^10.0.0"
     uuid "^10.0.0"
 
-"@cadenza.io/service@2.3.5":
-  version "2.3.5"
-  resolved "https://registry.yarnpkg.com/@cadenza.io/service/-/service-2.3.5.tgz#0765b0060fd26515decbc6d419ca25e9b5bb85be"
-  integrity sha512-kLwnPlifFB8pjFHTQdR/nqwy+aCUDenpxmZ2KXREZDe2O8I9TAcsM5BNI2cL8OJZxnUHzDvUfWG0gbAheZas7A==
+"@cadenza.io/service@2.3.7":
+  version "2.3.7"
+  resolved "https://registry.yarnpkg.com/@cadenza.io/service/-/service-2.3.7.tgz#e73518610b647709451de6e367e3b661b369e23c"
+  integrity sha512-4bEPW6y1BHFx69so0BdLxITsH7M5wP26xhMhVlrCQlfG0Y4rvvUQTQ5byLCDMcRiTobdGAGN4j/3bVgRLy56qA==
   dependencies:
     "@cadenza.io/core" "^3.19.2"
     "@types/pg" "^8.15.4"
