@@ -46,6 +46,7 @@ export default class CadenzaDB {
 
       Cadenza.createMetaRoutine("Sync services", [
         Cadenza.get("dbQueryServiceInstance")!,
+        Cadenza.get("dbQueryIntentToTaskMap")!,
         prepareSignalSyncTask,
       ]).doOn("meta.cadenza_db.sync_tick");
 
