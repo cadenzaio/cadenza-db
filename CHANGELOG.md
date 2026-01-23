@@ -1,3 +1,10 @@
+# [2.4.0](https://github.com/cadenzaio/cadenza-db/compare/v2.3.3...v2.4.0) (2026-01-23)
+
+
+### Features
+
+* Added intent to task map to throttle sync. ([7449f66](https://github.com/cadenzaio/cadenza-db/commit/7449f66719c68375e3a75be231004ec79cfcca5a))
+
 ## [2.3.3](https://github.com/cadenzaio/cadenza-db/compare/v2.3.2...v2.3.3) (2026-01-20)
 
 
