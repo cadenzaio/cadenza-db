@@ -16,27 +16,27 @@
   resolved "https://registry.yarnpkg.com/@babel/helper-validator-identifier/-/helper-validator-identifier-7.28.5.tgz#010b6938fab7cb7df74aa2bbc06aa503b8fe5fb4"
   integrity sha512-qSs4ifwzKJSV39ucNjsvc6WVHs6b7S03sOh2OcHF9UHfVPqWWALUsNUVzhSBiItjRZoLHx7nIarVjqKVusUZ1Q==
 
-"@cadenza.io/core@^3.19.2":
-  version "3.19.2"
-  resolved "https://registry.yarnpkg.com/@cadenza.io/core/-/core-3.19.2.tgz#13cae434917e6526883e91ef6fd990290d100e63"
-  integrity sha512-if7OXYv38HXFilbypySOqW+Vt8NRUPp+gg3p/DIxSbwZCQAFggdczOO5Got57fBa+f2Vmrrpt2YJ3wDYhcdh7A==
+"@cadenza.io/core@^3.19.3":
+  version "3.19.3"
+  resolved "https://registry.yarnpkg.com/@cadenza.io/core/-/core-3.19.3.tgz#e0384aaa153c2ddbe09b95d37fc9604af62fea27"
+  integrity sha512-jHk8NvacRXO+aWMl7aGMlPAybsAPjqn63LWZUUxBxfJR9ielNccAVNq26vaLKgqTqBiZ4oJgggRf8x99f9RDRQ==
   dependencies:
     "@types/uuid" "^10.0.0"
     uuid "^10.0.0"
 
-"@cadenza.io/service@2.3.10":
-  version "2.3.10"
-  resolved "https://registry.yarnpkg.com/@cadenza.io/service/-/service-2.3.10.tgz#51552f148c9331334327e9d94499e4d8e6ea850c"
-  integrity sha512-wtdHOSzmeRaIIrKOnE85uTFgZUb2pUt+pE78cLIMitTWtm6Zq+3v6psMRK+jaq8Bwc4cD/gDwQshGka4rlq4GA==
+"@cadenza.io/service@2.3.12":
+  version "2.3.12"
+  resolved "https://registry.yarnpkg.com/@cadenza.io/service/-/service-2.3.12.tgz#591ccf4a342c62c9c44871cee44548954682c7b3"
+  integrity sha512-nRYiDt/Xk5WWaQsIEhLg6cYZwvd40WG61QxTNt3e/ZWt/P2He5R3ZVToZpbP3nC732rWJEHssOMETrY1g1rQCg==
   dependencies:
-    "@cadenza.io/core" "^3.19.2"
+    "@cadenza.io/core" "^3.19.3"
     "@types/pg" "^8.15.4"
     "@types/uuid" "^10.0.0"
     body-parser "^2.2.0"
     cors "^2.8.5"
     express "^5.1.0"
     helmet "^8.1.0"
-    lodash-es "^4.17.21"
+    lodash-es "^4.17.23"
     node-fetch "^3.3.2"
     pg "^8.16.3"
     rate-limiter-flexible "^8.1.0"
@@ -3051,6 +3051,11 @@ lodash-es@^4.17.21:
   version "4.17.21"
   resolved "https://registry.yarnpkg.com/lodash-es/-/lodash-es-4.17.21.tgz#43e626c46e6591b7750beb2b50117390c609e3ee"
   integrity sha512-mKnC+QJ9pWVzv+C4/U3rRsHapFfHvQFoFB92e52xeyGMcX6/OlIl78je1u8vePzYZSkkogMPJ2yjxxsb89cxyw==
+
+lodash-es@^4.17.23:
+  version "4.17.23"
+  resolved "https://registry.yarnpkg.com/lodash-es/-/lodash-es-4.17.23.tgz#58c4360fd1b5d33afc6c0bbd3d1149349b1138e0"
+  integrity sha512-kVI48u3PZr38HdYz98UmfPnXl2DXrpdctLrFLCd3kOx1xUkOmpFPx7gCWWM5MPkL/fD8zb+Ph0QzjGFs4+hHWg==
 
 lodash.camelcase@^4.3.0:
   version "4.3.0"
