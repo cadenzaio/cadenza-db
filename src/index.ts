@@ -640,7 +640,6 @@ export default class CadenzaDB {
           },
 
           context_schema: {
-            // TODO
             fields: {
               uuid: {
                 type: "uuid",
