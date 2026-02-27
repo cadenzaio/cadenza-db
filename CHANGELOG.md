@@ -1,3 +1,10 @@
+# [2.6.0](https://github.com/cadenzaio/cadenza-db/compare/v2.5.11...v2.6.0) (2026-02-27)
+
+
+### Features
+
+* **schema:** store task context schemas inline as jsonb ([918492f](https://github.com/cadenzaio/cadenza-db/commit/918492f5ebf3c0fcffd1e8f240c7acd9bc10c0ad))
+
 ## [2.5.11](https://github.com/cadenzaio/cadenza-db/compare/v2.5.10...v2.5.11) (2026-02-25)
 
 
