@@ -316,16 +316,12 @@ export default class CadenzaDB {
                 },
                 default: 1.0,
               },
-              input_context_schema_id: {
-                type: "uuid",
-                references: "context_schema(uuid)",
-                onDelete: "cascade",
+              input_context_schema: {
+                type: "jsonb",
                 default: null,
               },
-              output_context_schema_id: {
-                type: "uuid",
-                references: "context_schema(uuid)",
-                onDelete: "cascade",
+              output_context_schema: {
+                type: "jsonb",
                 default: null,
               },
               validate_input_context: {
@@ -1281,6 +1277,26 @@ export default class CadenzaDB {
                 ],
               },
             },
+            customIntents: {
+              query: [
+                {
+                  intent: "meta-service-registry-full-sync",
+                  description:
+                    "Collect data required for distributed service registry full sync.",
+                  input: {
+                    type: "object",
+                    properties: {
+                      syncScope: {
+                        type: "string",
+                        constraints: {
+                          oneOf: ["service-registry-full-sync"],
+                        },
+                      },
+                    },
+                  },
+                },
+              ],
+            },
           },
 
           service_instance_health_snapshot: {
@@ -1502,6 +1518,26 @@ export default class CadenzaDB {
                 ],
               },
             },
+            customIntents: {
+              query: [
+                {
+                  intent: "meta-service-registry-full-sync",
+                  description:
+                    "Collect data required for distributed service registry full sync.",
+                  input: {
+                    type: "object",
+                    properties: {
+                      syncScope: {
+                        type: "string",
+                        constraints: {
+                          oneOf: ["service-registry-full-sync"],
+                        },
+                      },
+                    },
+                  },
+                },
+              ],
+            },
           },
 
           signal_emission: {
@@ -1709,6 +1745,26 @@ export default class CadenzaDB {
               triggers: {
                 insert: ["global.meta.graph_metadata.task_intent_associated"],
               },
+            },
+            customIntents: {
+              query: [
+                {
+                  intent: "meta-service-registry-full-sync",
+                  description:
+                    "Collect data required for distributed service registry full sync.",
+                  input: {
+                    type: "object",
+                    properties: {
+                      syncScope: {
+                        type: "string",
+                        constraints: {
+                          oneOf: ["service-registry-full-sync"],
+                        },
+                      },
+                    },
+                  },
+                },
+              ],
             },
           },
 
