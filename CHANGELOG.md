@@ -1,3 +1,10 @@
+# [2.8.0](https://github.com/cadenzaio/cadenza-db/compare/v2.7.0...v2.8.0) (2026-03-03)
+
+
+### Features
+
+* **schema:** remove unused fields from index model ([1e1d5ae](https://github.com/cadenzaio/cadenza-db/commit/1e1d5ae51774eb1ebebd9fa5dd460d4825b58027))
+
 # [2.7.0](https://github.com/cadenzaio/cadenza-db/compare/v2.6.2...v2.7.0) (2026-03-03)
 
 
