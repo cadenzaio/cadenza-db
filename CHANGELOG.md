@@ -1,3 +1,10 @@
+# [2.7.0](https://github.com/cadenzaio/cadenza-db/compare/v2.6.2...v2.7.0) (2026-03-03)
+
+
+### Features
+
+* **schema:** add actor-related tables and update dependencies ([3daf0b0](https://github.com/cadenzaio/cadenza-db/commit/3daf0b0b64307642ae3105eb76945cbe50a3fd1c))
+
 ## [2.6.2](https://github.com/cadenzaio/cadenza-db/compare/v2.6.1...v2.6.2) (2026-02-27)
 
 
