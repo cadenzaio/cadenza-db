@@ -376,6 +376,277 @@ export default class CadenzaDB {
             },
           },
 
+          actor: {
+            fields: {
+              name: {
+                type: "varchar",
+                required: true,
+                constraints: {
+                  maxLength: 100,
+                },
+              },
+              description: {
+                type: "text",
+                default: "",
+              },
+              service_name: {
+                type: "varchar",
+                references: "service(name)",
+                onDelete: "cascade",
+                required: true,
+              },
+              kind: {
+                type: "varchar",
+                default: "standard",
+                constraints: {
+                  maxLength: 25,
+                },
+              },
+              default_key: {
+                type: "varchar",
+                required: true,
+                constraints: {
+                  maxLength: 255,
+                },
+              },
+              load_policy: {
+                type: "varchar",
+                default: "eager",
+                constraints: {
+                  maxLength: 25,
+                },
+              },
+              write_contract: {
+                type: "varchar",
+                default: "overwrite",
+                constraints: {
+                  maxLength: 25,
+                },
+              },
+              runtime_read_guard: {
+                type: "varchar",
+                default: "none",
+                constraints: {
+                  maxLength: 25,
+                },
+              },
+              consistency_profile: {
+                type: "varchar",
+                default: null,
+                constraints: {
+                  maxLength: 25,
+                },
+              },
+              key_definition: {
+                type: "jsonb",
+                default: null,
+              },
+              state_definition: {
+                type: "jsonb",
+                default: "'{}'",
+              },
+              lifecycle_definition: {
+                type: "jsonb",
+                default: "'{}'",
+              },
+              retry_policy: {
+                type: "jsonb",
+                default: "'{}'",
+              },
+              idempotency_policy: {
+                type: "jsonb",
+                default: "'{}'",
+              },
+              session_policy: {
+                type: "jsonb",
+                default: "'{}'",
+              },
+              generated_by: {
+                type: "varchar",
+                default: null,
+                references: "generated_by_type(name)",
+                onDelete: "set default",
+                constraints: {
+                  maxLength: 50,
+                },
+              },
+              is_meta: {
+                type: "boolean",
+                default: false,
+              },
+              version: {
+                type: "int",
+                default: 1,
+              },
+              created: {
+                type: "timestamp",
+                default: "now()",
+              },
+              deleted: {
+                type: "boolean",
+                default: false,
+              },
+            },
+            primaryKey: ["name", "service_name", "version"],
+            indexes: [["service_name", "is_meta"], ["generated_by"]],
+            customSignals: {
+              triggers: {
+                insert: ["global.meta.graph_metadata.actor_created"],
+                update: ["global.meta.graph_metadata.actor_updated"],
+              },
+            },
+          },
+
+          actor_task_map: {
+            fields: {
+              actor_name: {
+                type: "varchar",
+                required: true,
+              },
+              actor_version: {
+                type: "int",
+                default: 1,
+              },
+              task_name: {
+                type: "varchar",
+                required: true,
+              },
+              task_version: {
+                type: "int",
+                default: 1,
+              },
+              service_name: {
+                type: "varchar",
+                references: "service(name)",
+                onDelete: "cascade",
+                required: true,
+              },
+              mode: {
+                type: "varchar",
+                default: "read",
+                constraints: {
+                  maxLength: 25,
+                },
+              },
+              description: {
+                type: "text",
+                default: "",
+              },
+              is_meta: {
+                type: "boolean",
+                default: false,
+              },
+              created: {
+                type: "timestamp",
+                default: "now()",
+              },
+              deleted: {
+                type: "boolean",
+                default: false,
+              },
+            },
+            primaryKey: [
+              "actor_name",
+              "actor_version",
+              "task_name",
+              "task_version",
+              "service_name",
+            ],
+            foreignKeys: [
+              {
+                tableName: "actor",
+                fields: ["actor_name", "service_name", "actor_version"],
+                referenceFields: ["name", "service_name", "version"],
+              },
+              {
+                tableName: "task",
+                fields: ["task_name", "task_version", "service_name"],
+                referenceFields: ["name", "version", "service_name"],
+              },
+            ],
+            indexes: [["service_name", "mode", "is_meta"]],
+            customSignals: {
+              triggers: {
+                insert: ["global.meta.graph_metadata.actor_task_associated"],
+              },
+            },
+          },
+
+          actor_session_state: {
+            fields: {
+              id: {
+                type: "uuid",
+                default: "gen_random_uuid()",
+                primary: true,
+              },
+              actor_name: {
+                type: "varchar",
+                required: true,
+              },
+              actor_version: {
+                type: "int",
+                default: 1,
+              },
+              actor_key: {
+                type: "varchar",
+                required: true,
+                constraints: {
+                  maxLength: 255,
+                },
+              },
+              service_name: {
+                type: "varchar",
+                references: "service(name)",
+                onDelete: "cascade",
+                required: true,
+              },
+              durable_state: {
+                type: "jsonb",
+                default: "'{}'",
+                required: true,
+              },
+              durable_version: {
+                type: "int",
+                default: 0,
+              },
+              expires_at: {
+                type: "timestamp",
+                default: null,
+              },
+              updated: {
+                type: "timestamp",
+                default: "now()",
+              },
+              created: {
+                type: "timestamp",
+                default: "now()",
+              },
+              deleted: {
+                type: "boolean",
+                default: false,
+              },
+            },
+            uniqueConstraints: [["actor_name", "actor_version", "actor_key", "service_name"]],
+            foreignKeys: [
+              {
+                tableName: "actor",
+                fields: ["actor_name", "service_name", "actor_version"],
+                referenceFields: ["name", "service_name", "version"],
+              },
+            ],
+            indexes: [
+              ["actor_name", "actor_key", "service_name"],
+              ["updated"],
+              ["expires_at"],
+            ],
+            customSignals: {
+              triggers: {
+                insert: ["global.meta.graph_metadata.actor_session_state_created"],
+                update: ["global.meta.graph_metadata.actor_session_state_updated"],
+              },
+            },
+          },
+
           directional_task_graph_map: {
             fields: {
               task_name: {
