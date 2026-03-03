@@ -112,6 +112,30 @@ Cadenza's core is divided into:
 - **Registry Layer**: GraphRegistry for introspection.
 - **Factory**: Cadenza for creation and bootstrap.
 
+## Actor MVP Schema
+
+The current actor minimum in `cadenza-db` is:
+
+- `actor`: actor definition registry.
+- `actor_task_map`: actor-task association registry.
+- `actor_session_state`: durable state by `(actor_name, actor_version, actor_key, service_name)`.
+
+Important contract rule:
+
+- Metadata payloads must match table field identities for validation and inserts to succeed.
+- Naming style conversion (for example snake/camel) is handled in transport; field identity is what must remain consistent.
+
+Current actor metadata signals used for sync:
+
+- `global.meta.graph_metadata.actor_created` -> `actor`
+- `global.meta.graph_metadata.actor_task_associated` -> `actor_task_map`
+
+Design constraints:
+
+- Actor type classification is `is_meta` (no `kind` column).
+- Runtime-only objects are not persisted.
+- Durable state persists through `actor_session_state.durable_state`.
+
 ## Contributing
 Contributions are welcome! Please fork the repo, create a branch, and submit a PR. Follow the code style and add tests for new features.
 

@@ -395,13 +395,6 @@ export default class CadenzaDB {
                 onDelete: "cascade",
                 required: true,
               },
-              kind: {
-                type: "varchar",
-                default: "standard",
-                constraints: {
-                  maxLength: 25,
-                },
-              },
               default_key: {
                 type: "varchar",
                 required: true,
@@ -442,10 +435,6 @@ export default class CadenzaDB {
                 default: null,
               },
               state_definition: {
-                type: "jsonb",
-                default: "'{}'",
-              },
-              lifecycle_definition: {
                 type: "jsonb",
                 default: "'{}'",
               },

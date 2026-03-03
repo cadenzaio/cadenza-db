@@ -12,9 +12,11 @@
 ## Alignment updates from discussion
 
 - `actor.kind` is unnecessary because the platform standard is `is_meta: boolean`.
+- `actor.lifecycle_definition` is unnecessary in the MVP schema and was removed.
 - Durable/session persistence should store serializable actor durable data only.
 - Runtime object state (e.g. sockets, clients, live handles) should not be persisted.
 - Actor/task/intents metadata and descriptions are important for future DB-native generation and operator understanding.
+- Metadata sync contracts must match DB field identities exactly; naming style conversion is transport-level.
 - Runtime-generated/ephemeral tasks remain part of execution behavior but should not be modeled as static durable definitions unless explicitly captured as primitives.
 
 ## Long-term direction (recorded)
