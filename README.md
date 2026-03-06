@@ -129,6 +129,9 @@ Current actor metadata signals used for sync:
 
 - `global.meta.graph_metadata.actor_created` -> `actor`
 - `global.meta.graph_metadata.actor_task_associated` -> `actor_task_map`
+- strict write-through session persistence path:
+  - core inquiry intent `meta-actor-session-state-persist`
+  - service responder upsert into `actor_session_state` with durable-version stale-write guard
 
 Design constraints:
 
