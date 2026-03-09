@@ -1,3 +1,10 @@
+# [2.9.0](https://github.com/cadenzaio/cadenza-db/compare/v2.8.0...v2.9.0) (2026-03-09)
+
+
+### Features
+
+* add architecture and product documentation, bump [@cadenza](https://github.com/cadenza).io/service to 2.12.0 ([2908968](https://github.com/cadenzaio/cadenza-db/commit/2908968ef804fad91152bf596335e9895548e09d))
+
 # [2.8.0](https://github.com/cadenzaio/cadenza-db/compare/v2.7.0...v2.8.0) (2026-03-03)
 
 
