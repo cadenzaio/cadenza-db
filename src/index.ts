@@ -1,4 +1,5 @@
 import Cadenza from "@cadenza.io/service";
+import { composeServiceRegistrySyncPayload } from "./serviceRegistrySync";
 
 let CREATED = false;
 
@@ -28,18 +29,28 @@ export default class CadenzaDB {
 
       Cadenza.createUniqueMetaTask("Compile sync data and broadcast", (ctx) => {
         let joinedContext: any = {};
-        ctx.joinedContexts.forEach((ctx: any) => {
-          joinedContext = { ...joinedContext, ...ctx };
+        ctx.joinedContexts.forEach((joined: any) => {
+          joinedContext = { ...joinedContext, ...joined };
         });
-        joinedContext.__broadcast = true;
+
+        const syncPayload = composeServiceRegistrySyncPayload(joinedContext);
+        syncPayload.__broadcast = true;
         console.log("Compiling sync data and broadcast...");
-        return joinedContext;
+        return syncPayload;
       })
         .doAfter(
           Cadenza.createMetaTask(
             "Forward service instance sync",
             (ctx) => ctx.__syncing,
           ).doAfter(Cadenza.get("dbQueryServiceInstance")!),
+          Cadenza.createMetaTask(
+            "Forward service transport sync",
+            (ctx) => ctx.__syncing,
+          ).doAfter(Cadenza.get("dbQueryServiceInstanceTransport")!),
+          Cadenza.createMetaTask(
+            "Forward intent to task map sync",
+            (ctx) => ctx.__syncing,
+          ).doAfter(Cadenza.get("dbQueryIntentToTaskMap")!),
           Cadenza.createMetaTask(
             "Forward signal to task map sync",
             (ctx) => ctx.__syncing,
@@ -53,6 +64,7 @@ export default class CadenzaDB {
 
       Cadenza.createMetaRoutine("Sync services", [
         Cadenza.get("dbQueryServiceInstance")!,
+        Cadenza.get("dbQueryServiceInstanceTransport")!,
         Cadenza.get("dbQueryIntentToTaskMap")!,
         prepareSignalSyncTask,
       ]).doOn("meta.cadenza_db.sync_tick");
@@ -1447,14 +1459,6 @@ export default class CadenzaDB {
                 default: "gen_random_uuid()",
                 primary: true,
               },
-              address: {
-                type: "text",
-                required: true,
-              },
-              port: {
-                type: "int",
-                required: true,
-              },
               process_pid: {
                 type: "int",
                 required: true,
@@ -1494,10 +1498,6 @@ export default class CadenzaDB {
                 type: "timestamp",
                 default: null,
               },
-              exposed: {
-                type: "boolean",
-                default: false,
-              },
               health: {
                 type: "jsonb",
                 default: "'{}'",
@@ -1522,18 +1522,111 @@ export default class CadenzaDB {
                 "is_blocked",
                 "is_primary",
                 "service_name",
-                "address",
-                "port",
               ],
             ],
             customSignals: {
               triggers: {
-                insert: ["global.meta.rest.network_configured"],
+                insert: [
+                  "global.meta.service_registry.instance_registered",
+                  "meta.service_registry.instance_registered",
+                ],
                 update: [
                   "global.meta.service_registry.service_handshake",
                   "global.meta.service_registry.service_not_responding",
                   "global.meta.sync_controller.synced",
                   "global.meta.service_registry.deleted",
+                ],
+              },
+            },
+            customIntents: {
+              query: [
+                {
+                  intent: "meta-service-registry-full-sync",
+                  description:
+                    "Collect data required for distributed service registry full sync.",
+                  input: {
+                    type: "object",
+                    properties: {
+                      syncScope: {
+                        type: "string",
+                        constraints: {
+                          oneOf: ["service-registry-full-sync"],
+                        },
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+          },
+
+          service_instance_transport: {
+            fields: {
+              uuid: {
+                type: "uuid",
+                default: "gen_random_uuid()",
+                primary: true,
+              },
+              service_instance_id: {
+                type: "uuid",
+                references: "service_instance(uuid)",
+                onDelete: "cascade",
+                required: true,
+              },
+              role: {
+                type: "varchar",
+                required: true,
+                constraints: {
+                  oneOf: ["internal", "public"],
+                  maxLength: 32,
+                },
+              },
+              origin: {
+                type: "text",
+                required: true,
+              },
+              protocols: {
+                type: "jsonb",
+                default: "'[\"rest\",\"socket\"]'",
+              },
+              security_profile: {
+                type: "varchar",
+                default: null,
+                constraints: {
+                  maxLength: 32,
+                },
+              },
+              auth_strategy: {
+                type: "varchar",
+                default: null,
+                constraints: {
+                  maxLength: 64,
+                },
+              },
+              created: {
+                type: "timestamp",
+                default: "now()",
+              },
+              modified: {
+                type: "timestamp",
+                default: "now()",
+              },
+              deleted: {
+                type: "boolean",
+                default: false,
+              },
+            },
+            indexes: [["service_instance_id", "role"], ["role", "origin"]],
+            uniqueConstraints: [["service_instance_id", "role", "origin"]],
+            customSignals: {
+              triggers: {
+                insert: [
+                  "global.meta.service_registry.transport_registered",
+                  "meta.service_registry.transport_registered",
+                ],
+                update: [
+                  "global.meta.service_registry.transport_updated",
+                  "meta.service_registry.transport_updated",
                 ],
               },
             },

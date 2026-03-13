@@ -176,6 +176,11 @@ Within this repo:
 - Prefer additive changes over breaking.
 - If uncertain, trigger clarification per root policy.
 - If complexity increases, trigger design-required per root policy.
+- Evolve DB-facing behavior mainly by composing Cadenza primitives and metadata flows.
+- Prefer flat task and signal graphs over deep nested helper-function call graphs.
+- Use signals as fire-and-forget detach points when no response contract is required.
+- Reuse tasks across multiple flows by cloning tasks when the task behavior is unchanged.
+- Keep helper functions narrowly scoped to repeated low-level work, normalization, or hot paths where primitive-only modeling would be inefficient.
 
 When in doubt: stop and ask.
 
