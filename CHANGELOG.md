@@ -1,3 +1,10 @@
+# [2.10.0](https://github.com/cadenzaio/cadenza-db/compare/v2.9.0...v2.10.0) (2026-03-13)
+
+
+### Features
+
+* **sync:** implement service registry sync with transport models and update dependencies ([f8d80b4](https://github.com/cadenzaio/cadenza-db/commit/f8d80b4d4eace6c76f97118c53001074e9fe30df))
+
 # [2.9.0](https://github.com/cadenzaio/cadenza-db/compare/v2.8.0...v2.9.0) (2026-03-09)
 
 
