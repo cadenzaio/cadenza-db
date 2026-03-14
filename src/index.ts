@@ -3,6 +3,55 @@ import { composeServiceRegistrySyncPayload } from "./serviceRegistrySync";
 
 let CREATED = false;
 
+function buildLegacyLocalSyncQueryTaskName(tableName: string): string {
+  const suffix = String(tableName ?? "")
+    .trim()
+    .split("_")
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join("");
+
+  return `dbQuery${suffix}`;
+}
+
+function resolveLocalSyncQueryTask(tableName: string) {
+  return (
+    Cadenza.get(`Query ${tableName}`) ??
+    Cadenza.get(buildLegacyLocalSyncQueryTaskName(tableName))
+  );
+}
+
+export function resolveLocalServiceRegistrySyncTasks() {
+  const queryServiceInstanceTask = resolveLocalSyncQueryTask("service_instance");
+  const queryServiceInstanceTransportTask = resolveLocalSyncQueryTask(
+    "service_instance_transport",
+  );
+  const queryIntentToTaskMapTask = resolveLocalSyncQueryTask(
+    "intent_to_task_map",
+  );
+  const querySignalToTaskMapTask = resolveLocalSyncQueryTask(
+    "signal_to_task_map",
+  );
+
+  if (
+    !queryServiceInstanceTask ||
+    !queryServiceInstanceTransportTask ||
+    !queryIntentToTaskMapTask ||
+    !querySignalToTaskMapTask
+  ) {
+    throw new Error(
+      "CadenzaDB local sync query tasks are not available. Expected generated local query tasks for service_instance, service_instance_transport, intent_to_task_map, and signal_to_task_map.",
+    );
+  }
+
+  return {
+    queryServiceInstanceTask,
+    queryServiceInstanceTransportTask,
+    queryIntentToTaskMapTask,
+    querySignalToTaskMapTask,
+  };
+}
+
 export default class CadenzaDB {
   static createCadenzaDBService(options?: {
     dropExisting?: boolean;
@@ -15,6 +64,12 @@ export default class CadenzaDB {
     CREATED = true;
     Cadenza.createEphemeralMetaTask("Start throttle sync", () => {
       Cadenza.log("Starting throttle sync...");
+      const {
+        queryServiceInstanceTask,
+        queryServiceInstanceTransportTask,
+        queryIntentToTaskMapTask,
+        querySignalToTaskMapTask,
+      } = resolveLocalServiceRegistrySyncTasks();
 
       const prepareSignalSyncTask = Cadenza.createMetaTask(
         "Prepare for signal sync",
@@ -42,30 +97,26 @@ export default class CadenzaDB {
           Cadenza.createMetaTask(
             "Forward service instance sync",
             (ctx) => ctx.__syncing,
-          ).doAfter(Cadenza.get("dbQueryServiceInstance")!),
+          ).doAfter(queryServiceInstanceTask),
           Cadenza.createMetaTask(
             "Forward service transport sync",
             (ctx) => ctx.__syncing,
-          ).doAfter(Cadenza.get("dbQueryServiceInstanceTransport")!),
+          ).doAfter(queryServiceInstanceTransportTask),
           Cadenza.createMetaTask(
             "Forward intent to task map sync",
             (ctx) => ctx.__syncing,
-          ).doAfter(Cadenza.get("dbQueryIntentToTaskMap")!),
+          ).doAfter(queryIntentToTaskMapTask),
           Cadenza.createMetaTask(
             "Forward signal to task map sync",
             (ctx) => ctx.__syncing,
-          ).doAfter(
-            Cadenza.get("dbQuerySignalToTaskMap")!.doAfter(
-              prepareSignalSyncTask,
-            ),
-          ),
+          ).doAfter(querySignalToTaskMapTask.doAfter(prepareSignalSyncTask)),
         )
         .emits("global.meta.cadenza_db.gathered_sync_data");
 
       Cadenza.createMetaRoutine("Sync services", [
-        Cadenza.get("dbQueryServiceInstance")!,
-        Cadenza.get("dbQueryServiceInstanceTransport")!,
-        Cadenza.get("dbQueryIntentToTaskMap")!,
+        queryServiceInstanceTask,
+        queryServiceInstanceTransportTask,
+        queryIntentToTaskMapTask,
         prepareSignalSyncTask,
       ]).doOn("meta.cadenza_db.sync_tick");
 
