@@ -1,3 +1,10 @@
+## [2.10.17](https://github.com/cadenzaio/cadenza-db/compare/v2.10.16...v2.10.17) (2026-03-14)
+
+
+### Bug Fixes
+
+* **sync:** use local authority query tasks ([ef228b4](https://github.com/cadenzaio/cadenza-db/commit/ef228b4f793cf5170065f5fa66c765f048f3aa93))
+
 ## [2.10.16](https://github.com/cadenzaio/cadenza-db/compare/v2.10.15...v2.10.16) (2026-03-14)
 
 
