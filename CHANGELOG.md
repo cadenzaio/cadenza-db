@@ -4,6 +4,14 @@
 ### Bug Fixes
 
 * **deps:** bump [@cadenza](https://github.com/cadenza).io/service to 2.17.23 ([ada8164](https://github.com/cadenzaio/cadenza-db/commit/ada816419a1ec5c8efae868c17a606c04a6df8b9))
+* **deps:** bump [@cadenza](https://github.com/cadenza).io/service to 2.17.24 ([8b31147](https://github.com/cadenzaio/cadenza-db/commit/8b311478fa981ea12851ec64f87c55311d8b7d62))
+
+## [2.10.25](https://github.com/cadenzaio/cadenza-db/compare/v2.10.24...v2.10.25) (2026-03-15)
+
+
+### Bug Fixes
+
+* **deps:** bump [@cadenza](https://github.com/cadenza).io/service to 2.17.23 ([ada8164](https://github.com/cadenzaio/cadenza-db/commit/ada816419a1ec5c8efae868c17a606c04a6df8b9))
 
 ## [2.10.24](https://github.com/cadenzaio/cadenza-db/compare/v2.10.23...v2.10.24) (2026-03-15)
 
