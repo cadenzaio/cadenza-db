@@ -126,6 +126,13 @@ export default class CadenzaDB {
         60000,
         true,
       );
+
+      Cadenza.emit("meta.sync_requested", {
+        __syncing: true,
+        __reason: "cadenza_db_local_sync_tasks_created",
+      });
+
+      return true;
     }).doOn("global.meta.sync_controller.synced");
 
     console.log("Creating CadenzaDB service");

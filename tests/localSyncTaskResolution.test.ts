@@ -1,10 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import Cadenza from "@cadenza.io/service";
-import { resolveLocalServiceRegistrySyncTasks } from "../src/index";
+import CadenzaDB, { resolveLocalServiceRegistrySyncTasks } from "../src/index";
 
 describe("local CadenzaDB sync task resolution", () => {
   afterEach(() => {
+    try {
+      Cadenza.reset();
+    } catch {
+      // Ignore resets before bootstrap in the test harness.
+    }
     vi.restoreAllMocks();
   });
 
@@ -49,6 +54,45 @@ describe("local CadenzaDB sync task resolution", () => {
 
     expect(() => resolveLocalServiceRegistrySyncTasks()).toThrow(
       /local sync query tasks are not available/i,
+    );
+  });
+
+  it("requests a follow-up sync after creating local throttle sync tasks", async () => {
+    Cadenza.createMetaTask("Query service_instance", () => ({
+      serviceInstances: [],
+      rowCount: 0,
+    }));
+    Cadenza.createMetaTask("Query service_instance_transport", () => ({
+      serviceInstanceTransports: [],
+      rowCount: 0,
+    }));
+    Cadenza.createMetaTask("Query intent_to_task_map", () => ({
+      intentToTaskMaps: [],
+      rowCount: 0,
+    }));
+    Cadenza.createMetaTask("Query signal_to_task_map", () => ({
+      signalToTaskMaps: [],
+      rowCount: 0,
+    }));
+
+    vi.spyOn(Cadenza, "createMetaDatabaseService").mockImplementation(
+      (() => undefined) as any,
+    );
+    vi.spyOn(Cadenza, "interval").mockImplementation((() => undefined) as any);
+
+    const emitSpy = vi.spyOn(Cadenza, "emit");
+
+    CadenzaDB.createCadenzaDBService();
+    Cadenza.emit("global.meta.sync_controller.synced", {});
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(emitSpy).toHaveBeenCalledWith(
+      "meta.sync_requested",
+      expect.objectContaining({
+        __syncing: true,
+        __reason: "cadenza_db_local_sync_tasks_created",
+      }),
     );
   });
 });
