@@ -2,6 +2,7 @@ import Cadenza from "@cadenza.io/service";
 import { composeServiceRegistrySyncPayload } from "./serviceRegistrySync";
 
 let CREATED = false;
+let LOCAL_SYNC_INITIALIZED = false;
 const SYNC_DEBUG_PREFIX = "[CADENZA_DB_SYNC_DEBUG]";
 const LOCAL_SYNC_DEBUG_ENABLED =
   typeof process !== "undefined" &&
@@ -76,6 +77,11 @@ export default class CadenzaDB {
 
     CREATED = true;
     Cadenza.createEphemeralMetaTask("Start throttle sync", () => {
+      if (LOCAL_SYNC_INITIALIZED) {
+        return false;
+      }
+
+      LOCAL_SYNC_INITIALIZED = true;
       Cadenza.log("Starting throttle sync...");
       const {
         queryServiceInstanceTask,
