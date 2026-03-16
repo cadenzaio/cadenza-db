@@ -1,3 +1,10 @@
+## [2.10.68](https://github.com/cadenzaio/cadenza-db/compare/v2.10.67...v2.10.68) (2026-03-16)
+
+
+### Bug Fixes
+
+* **sync:** gate local sync tracing behind env ([c7d1727](https://github.com/cadenzaio/cadenza-db/commit/c7d1727e56e1f8090f7229ad2f16e1ca3707e911))
+
 ## [2.10.67](https://github.com/cadenzaio/cadenza-db/compare/v2.10.66...v2.10.67) (2026-03-16)
 
 
