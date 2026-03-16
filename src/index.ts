@@ -3,8 +3,16 @@ import { composeServiceRegistrySyncPayload } from "./serviceRegistrySync";
 
 let CREATED = false;
 const SYNC_DEBUG_PREFIX = "[CADENZA_DB_SYNC_DEBUG]";
+const LOCAL_SYNC_DEBUG_ENABLED =
+  typeof process !== "undefined" &&
+  typeof process.env === "object" &&
+  process.env.CADENZA_DB_SYNC_DEBUG === "true";
 
 function logLocalSyncDebug(event: string, payload: Record<string, unknown>) {
+  if (!LOCAL_SYNC_DEBUG_ENABLED) {
+    return;
+  }
+
   console.log(`${SYNC_DEBUG_PREFIX} ${event}`, payload);
 }
 
