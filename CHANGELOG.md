@@ -1,3 +1,10 @@
+## [2.10.50](https://github.com/cadenzaio/cadenza-db/compare/v2.10.49...v2.10.50) (2026-03-16)
+
+
+### Bug Fixes
+
+* **sync:** publish local authority debug tracing ([73cada9](https://github.com/cadenzaio/cadenza-db/commit/73cada9f957a2c8b2bf6709deda793ed56181544))
+
 ## [2.10.49](https://github.com/cadenzaio/cadenza-db/compare/v2.10.48...v2.10.49) (2026-03-16)
 
 
