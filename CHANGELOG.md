@@ -1,3 +1,10 @@
+## [2.10.60](https://github.com/cadenzaio/cadenza-db/compare/v2.10.59...v2.10.60) (2026-03-16)
+
+
+### Bug Fixes
+
+* **deps:** bump [@cadenza](https://github.com/cadenza).io/service to 2.17.57 ([44cda13](https://github.com/cadenzaio/cadenza-db/commit/44cda1347e9ad2f0c17009d89bb5281a565aa8bd))
+
 ## [2.10.59](https://github.com/cadenzaio/cadenza-db/compare/v2.10.58...v2.10.59) (2026-03-16)
 
 
