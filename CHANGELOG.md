@@ -1,3 +1,10 @@
+## [2.10.49](https://github.com/cadenzaio/cadenza-db/compare/v2.10.48...v2.10.49) (2026-03-16)
+
+
+### Bug Fixes
+
+* **sync:** rescan after local sync task creation ([26d0dff](https://github.com/cadenzaio/cadenza-db/commit/26d0dff15a635b181d73c15e03a170c25a6b6f2a))
+
 ## [2.10.48](https://github.com/cadenzaio/cadenza-db/compare/v2.10.47...v2.10.48) (2026-03-16)
 
 
