@@ -2,6 +2,11 @@ import Cadenza from "@cadenza.io/service";
 import { composeServiceRegistrySyncPayload } from "./serviceRegistrySync";
 
 let CREATED = false;
+const SYNC_DEBUG_PREFIX = "[CADENZA_DB_SYNC_DEBUG]";
+
+function logLocalSyncDebug(event: string, payload: Record<string, unknown>) {
+  console.log(`${SYNC_DEBUG_PREFIX} ${event}`, payload);
+}
 
 function buildLegacyLocalSyncQueryTaskName(tableName: string): string {
   const suffix = String(tableName ?? "")
@@ -71,9 +76,20 @@ export default class CadenzaDB {
         querySignalToTaskMapTask,
       } = resolveLocalServiceRegistrySyncTasks();
 
+      logLocalSyncDebug("start_throttle_sync", {
+        queryServiceInstanceTask: queryServiceInstanceTask.name,
+        queryServiceInstanceTransportTask: queryServiceInstanceTransportTask.name,
+        queryIntentToTaskMapTask: queryIntentToTaskMapTask.name,
+        querySignalToTaskMapTask: querySignalToTaskMapTask.name,
+      });
+
       const prepareSignalSyncTask = Cadenza.createMetaTask(
         "Prepare for signal sync",
         (ctx) => {
+          logLocalSyncDebug("prepare_signal_sync", {
+            hasQueryData: typeof ctx.queryData === "object",
+            queryData: ctx.queryData ?? null,
+          });
           ctx.filter = {
             isGlobal: true,
           };
@@ -90,25 +106,54 @@ export default class CadenzaDB {
 
         const syncPayload = composeServiceRegistrySyncPayload(joinedContext);
         syncPayload.__broadcast = true;
-        console.log("Compiling sync data and broadcast...");
+        logLocalSyncDebug("compile_sync_data", {
+          serviceInstances: syncPayload.serviceInstances?.length ?? 0,
+          intentToTaskMaps: syncPayload.intentToTaskMaps?.length ?? 0,
+          signalToTaskMaps: syncPayload.signalToTaskMaps?.length ?? 0,
+        });
         return syncPayload;
       })
         .doAfter(
           Cadenza.createMetaTask(
             "Forward service instance sync",
-            (ctx) => ctx.__syncing,
+            (ctx) => {
+              logLocalSyncDebug("forward_service_instance_sync", {
+                rowCount: ctx.rowCount ?? null,
+                serviceInstances: ctx.serviceInstances?.length ?? 0,
+              });
+              return ctx.__syncing;
+            },
           ).doAfter(queryServiceInstanceTask),
           Cadenza.createMetaTask(
             "Forward service transport sync",
-            (ctx) => ctx.__syncing,
+            (ctx) => {
+              logLocalSyncDebug("forward_service_transport_sync", {
+                rowCount: ctx.rowCount ?? null,
+                serviceInstanceTransports:
+                  ctx.serviceInstanceTransports?.length ?? 0,
+              });
+              return ctx.__syncing;
+            },
           ).doAfter(queryServiceInstanceTransportTask),
           Cadenza.createMetaTask(
             "Forward intent to task map sync",
-            (ctx) => ctx.__syncing,
+            (ctx) => {
+              logLocalSyncDebug("forward_intent_to_task_map_sync", {
+                rowCount: ctx.rowCount ?? null,
+                intentToTaskMaps: ctx.intentToTaskMaps?.length ?? 0,
+              });
+              return ctx.__syncing;
+            },
           ).doAfter(queryIntentToTaskMapTask),
           Cadenza.createMetaTask(
             "Forward signal to task map sync",
-            (ctx) => ctx.__syncing,
+            (ctx) => {
+              logLocalSyncDebug("forward_signal_to_task_map_sync", {
+                rowCount: ctx.rowCount ?? null,
+                signalToTaskMaps: ctx.signalToTaskMaps?.length ?? 0,
+              });
+              return ctx.__syncing;
+            },
           ).doAfter(querySignalToTaskMapTask.doAfter(prepareSignalSyncTask)),
         )
         .emits("global.meta.cadenza_db.gathered_sync_data");
@@ -130,6 +175,9 @@ export default class CadenzaDB {
       Cadenza.emit("meta.sync_requested", {
         __syncing: true,
         __reason: "cadenza_db_local_sync_tasks_created",
+      });
+      logLocalSyncDebug("requested_follow_up_sync", {
+        reason: "cadenza_db_local_sync_tasks_created",
       });
 
       return true;
