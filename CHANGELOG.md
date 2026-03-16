@@ -1,3 +1,10 @@
+## [2.10.69](https://github.com/cadenzaio/cadenza-db/compare/v2.10.68...v2.10.69) (2026-03-16)
+
+
+### Bug Fixes
+
+* **sync:** initialize local throttle sync once ([324b7f4](https://github.com/cadenzaio/cadenza-db/commit/324b7f4f5552610a5344aa9a0e8a3c6a3c23ea26))
+
 ## [2.10.68](https://github.com/cadenzaio/cadenza-db/compare/v2.10.67...v2.10.68) (2026-03-16)
 
 
