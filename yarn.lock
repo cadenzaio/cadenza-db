@@ -24,10 +24,10 @@
     "@types/uuid" "^10.0.0"
     uuid "^10.0.0"
 
-"@cadenza.io/service@2.17.46":
-  version "2.17.46"
-  resolved "https://registry.npmjs.org/@cadenza.io/service/-/service-2.17.46.tgz"
-  integrity sha512-FeOgIHHbv9IuWfxc6h+DGqJ9sCi+yjh3XQBbVaWMwuDSoXaJ7lna6uam6C2HJOlG05n9E2VG6/rNno+ErhITxw==
+"@cadenza.io/service@2.17.47":
+  version "2.17.47"
+  resolved "https://registry.npmjs.org/@cadenza.io/service/-/service-2.17.47.tgz"
+  integrity sha512-3nyKFI/WeDyCSYFEsRyl+SHuXvg34zMs45n5v6dSjrGg2GyhY70U6FtTd3RjM7qt3nFHbwQlscck7XGTRU9fmA==
   dependencies:
     "@cadenza.io/core" "^3.24.0"
     "@types/pg" "^8.15.4"
