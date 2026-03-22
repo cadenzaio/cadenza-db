@@ -1,3 +1,12 @@
+## [2.10.88](https://github.com/cadenzaio/cadenza-db/compare/v2.10.87...v2.10.88) (2026-03-22)
+
+
+### Bug Fixes
+
+* **deps:** bump [@cadenza](https://github.com/cadenza).io/service to 2.18.2 ([8339570](https://github.com/cadenzaio/cadenza-db/commit/8339570c445b6b12eb83836e2118b0ce8ac1ca72))
+* **deps:** bump [@cadenza](https://github.com/cadenza).io/service to 2.18.3 ([1bcea5c](https://github.com/cadenzaio/cadenza-db/commit/1bcea5cb00f48fe1dc92f87102c662fca3e7d509))
+* make metadata triggers idempotent ([8e82c08](https://github.com/cadenzaio/cadenza-db/commit/8e82c089923703e1fdb8a1158522b0d6ca4f933f))
+
 ## [2.10.87](https://github.com/cadenzaio/cadenza-db/compare/v2.10.86...v2.10.87) (2026-03-18)
 
 
