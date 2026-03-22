@@ -35,6 +35,23 @@ function resolveLocalSyncQueryTask(tableName: string) {
   );
 }
 
+function buildInsertTriggerWithOnConflictDoNothing(
+  signal: string,
+  target: string[],
+) {
+  return {
+    signal,
+    queryData: {
+      onConflict: {
+        target,
+        action: {
+          do: "nothing" as const,
+        },
+      },
+    },
+  };
+}
+
 export function resolveLocalServiceRegistrySyncTasks() {
   const queryServiceInstanceTask = resolveLocalSyncQueryTask("service_instance");
   const queryServiceInstanceTransportTask = resolveLocalSyncQueryTask(
@@ -244,7 +261,12 @@ export default class CadenzaDB {
             indexes: [["is_meta"]],
             customSignals: {
               triggers: {
-                insert: ["meta.create_service_requested"],
+                insert: [
+                  buildInsertTriggerWithOnConflictDoNothing(
+                    "meta.create_service_requested",
+                    ["name"],
+                  ),
+                ],
               },
             },
           },
@@ -290,7 +312,12 @@ export default class CadenzaDB {
             uniqueConstraints: [["service_name"]],
             customSignals: {
               triggers: {
-                insert: ["global.meta.created_database_service"],
+                insert: [
+                  buildInsertTriggerWithOnConflictDoNothing(
+                    "global.meta.created_database_service",
+                    ["service_name"],
+                  ),
+                ],
               },
             },
           },
@@ -502,7 +529,12 @@ export default class CadenzaDB {
             indexes: [["is_meta", "is_deputy", "generated_by"]],
             customSignals: {
               triggers: {
-                insert: ["global.meta.graph_metadata.task_created"],
+                insert: [
+                  buildInsertTriggerWithOnConflictDoNothing(
+                    "global.meta.graph_metadata.task_created",
+                    ["name", "service_name", "version"],
+                  ),
+                ],
                 update: ["global.meta.graph_metadata.task_updated"],
               },
             },
@@ -612,7 +644,12 @@ export default class CadenzaDB {
             indexes: [["service_name", "is_meta"], ["generated_by"]],
             customSignals: {
               triggers: {
-                insert: ["global.meta.graph_metadata.actor_created"],
+                insert: [
+                  buildInsertTriggerWithOnConflictDoNothing(
+                    "global.meta.graph_metadata.actor_created",
+                    ["name", "service_name", "version"],
+                  ),
+                ],
                 update: ["global.meta.graph_metadata.actor_updated"],
               },
             },
@@ -688,7 +725,18 @@ export default class CadenzaDB {
             indexes: [["service_name", "mode", "is_meta"]],
             customSignals: {
               triggers: {
-                insert: ["global.meta.graph_metadata.actor_task_associated"],
+                insert: [
+                  buildInsertTriggerWithOnConflictDoNothing(
+                    "global.meta.graph_metadata.actor_task_associated",
+                    [
+                      "actor_name",
+                      "actor_version",
+                      "task_name",
+                      "task_version",
+                      "service_name",
+                    ],
+                  ),
+                ],
               },
             },
           },
@@ -843,7 +891,17 @@ export default class CadenzaDB {
             customSignals: {
               triggers: {
                 insert: [
-                  "global.meta.graph_metadata.task_relationship_created",
+                  buildInsertTriggerWithOnConflictDoNothing(
+                    "global.meta.graph_metadata.task_relationship_created",
+                    [
+                      "task_name",
+                      "predecessor_task_name",
+                      "task_version",
+                      "predecessor_task_version",
+                      "service_name",
+                      "predecessor_service_name",
+                    ],
+                  ),
                 ],
                 update: ["global.meta.graph_metadata.relationship_executed"],
               },
@@ -891,8 +949,14 @@ export default class CadenzaDB {
             customSignals: {
               triggers: {
                 insert: [
-                  "global.meta.graph_metadata.routine_created",
-                  "global.meta.sync_controller.routine_added",
+                  buildInsertTriggerWithOnConflictDoNothing(
+                    "global.meta.graph_metadata.routine_created",
+                    ["name", "service_name", "version"],
+                  ),
+                  buildInsertTriggerWithOnConflictDoNothing(
+                    "global.meta.sync_controller.routine_added",
+                    ["name", "service_name", "version"],
+                  ),
                 ],
                 update: ["global.meta.graph_metadata.routine_updated"],
               },
@@ -950,8 +1014,26 @@ export default class CadenzaDB {
             customSignals: {
               triggers: {
                 insert: [
-                  "global.meta.graph_metadata.task_added_to_routine",
-                  "global.meta.sync_controller.task_to_routine_map",
+                  buildInsertTriggerWithOnConflictDoNothing(
+                    "global.meta.graph_metadata.task_added_to_routine",
+                    [
+                      "task_name",
+                      "routine_name",
+                      "task_version",
+                      "routine_version",
+                      "service_name",
+                    ],
+                  ),
+                  buildInsertTriggerWithOnConflictDoNothing(
+                    "global.meta.sync_controller.task_to_routine_map",
+                    [
+                      "task_name",
+                      "routine_name",
+                      "task_version",
+                      "routine_version",
+                      "service_name",
+                    ],
+                  ),
                 ],
               },
             },
@@ -1929,7 +2011,12 @@ export default class CadenzaDB {
             indexes: [["is_meta", "domain", "action", "is_global"]],
             customSignals: {
               triggers: {
-                insert: ["global.meta.signal_controller.signal_added"],
+                insert: [
+                  buildInsertTriggerWithOnConflictDoNothing(
+                    "global.meta.signal_controller.signal_added",
+                    ["name"],
+                  ),
+                ],
               },
             },
           },
@@ -1984,7 +2071,17 @@ export default class CadenzaDB {
             ],
             customSignals: {
               triggers: {
-                insert: ["global.meta.graph_metadata.task_signal_observed"],
+                insert: [
+                  buildInsertTriggerWithOnConflictDoNothing(
+                    "global.meta.graph_metadata.task_signal_observed",
+                    [
+                      "signal_name",
+                      "task_name",
+                      "task_version",
+                      "service_name",
+                    ],
+                  ),
+                ],
                 update: [
                   // "meta.graph_metadata.task_unsubscribed_signal",
                   // "*.meta.graph_metadata.task_unsubscribed_signal",
@@ -2161,7 +2258,12 @@ export default class CadenzaDB {
             indexes: [["is_meta"]],
             customSignals: {
               triggers: {
-                insert: ["global.meta.graph_metadata.intent_created"],
+                insert: [
+                  buildInsertTriggerWithOnConflictDoNothing(
+                    "global.meta.graph_metadata.intent_created",
+                    ["name"],
+                  ),
+                ],
                 update: ["global.meta.graph_metadata.intent_updated"],
               },
             },
@@ -2216,7 +2318,17 @@ export default class CadenzaDB {
             ],
             customSignals: {
               triggers: {
-                insert: ["global.meta.graph_metadata.task_intent_associated"],
+                insert: [
+                  buildInsertTriggerWithOnConflictDoNothing(
+                    "global.meta.graph_metadata.task_intent_associated",
+                    [
+                      "intent_name",
+                      "task_name",
+                      "task_version",
+                      "service_name",
+                    ],
+                  ),
+                ],
               },
             },
             customIntents: {
@@ -2639,6 +2751,114 @@ export default class CadenzaDB {
         port: options?.port ?? parseInt(process.env.HTTP_PORT ?? "8080"),
       },
     );
+
+    const localIntentRegistryInsertTask =
+      Cadenza.getLocalCadenzaDBInsertTask("intent_registry");
+    const localIntentToTaskMapInsertTask =
+      Cadenza.getLocalCadenzaDBInsertTask("intent_to_task_map");
+
+    if (localIntentRegistryInsertTask && localIntentToTaskMapInsertTask) {
+      const buildOnConflictDoNothing = (target: string[]) => ({
+        target,
+        action: {
+          do: "nothing",
+        },
+      });
+
+      const prepareIntentRegistryAssociationTask = Cadenza.createMetaTask(
+        "Prepare direct intent registry insert from task-intent association",
+        (ctx: any) => {
+          const intentName =
+            typeof ctx.data?.intentName === "string" ? ctx.data.intentName : "";
+
+          if (!intentName) {
+            return false;
+          }
+
+          const intentData = {
+            name: intentName,
+            isMeta:
+              intentName.startsWith("meta.") ||
+              intentName.startsWith("meta-") ||
+              intentName.startsWith("global.meta."),
+          };
+
+          return {
+            ...ctx,
+            data: intentData,
+            onConflict: buildOnConflictDoNothing(["name"]),
+            queryData: {
+              data: intentData,
+              onConflict: buildOnConflictDoNothing(["name"]),
+            },
+            __intentMapData: ctx.data,
+          };
+        },
+        "Builds a minimal intent_registry row from direct task-intent metadata.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      const restoreIntentToTaskMapAssociationTask = Cadenza.createMetaTask(
+        "Restore direct intent-to-task map insert payload",
+        (ctx: any) => {
+          const mapData = ctx.__intentMapData;
+          const intentName =
+            typeof mapData?.intentName === "string" ? mapData.intentName : "";
+          const taskName =
+            typeof mapData?.taskName === "string" ? mapData.taskName : "";
+          const taskVersion = Number.isFinite(Number(mapData?.taskVersion))
+            ? Number(mapData.taskVersion)
+            : 1;
+          const serviceName =
+            typeof mapData?.serviceName === "string" ? mapData.serviceName : "";
+
+          if (!intentName || !taskName || !serviceName) {
+            return false;
+          }
+
+          const row = {
+            intentName,
+            taskName,
+            taskVersion,
+            serviceName,
+          };
+
+          return {
+            ...ctx,
+            data: row,
+            onConflict: buildOnConflictDoNothing([
+              "intent_name",
+              "task_name",
+              "task_version",
+              "service_name",
+            ]),
+            queryData: {
+              data: row,
+              onConflict: buildOnConflictDoNothing([
+                "intent_name",
+                "task_name",
+                "task_version",
+                "service_name",
+              ]),
+            },
+          };
+        },
+        "Builds direct intent_to_task_map rows from task-intent metadata.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      prepareIntentRegistryAssociationTask
+        .doOn("global.meta.graph_metadata.task_intent_associated")
+        .then(localIntentRegistryInsertTask)
+        .then(restoreIntentToTaskMapAssociationTask)
+        .then(localIntentToTaskMapInsertTask);
+    }
   }
 }
 
