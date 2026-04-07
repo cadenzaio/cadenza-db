@@ -1,6 +1,6 @@
 {
   "name": "@cadenza.io/cadenza-db",
-  "version": "2.10.88",
+  "version": "2.11.0",
   "description": "This is a lightweight framework for building seamless distributed asynchronous graphs and flows of tasks and signals.",
   "scripts": {
     "start": "node --loader ts-node/esm src/index.ts",
@@ -64,8 +64,7 @@
   "peerDependencies": {
     "@cadenza.io/service": "^2.19.0"
   },
-  "dependencies": {
-  },
+  "dependencies": {},
   "devDependencies": {
     "@cadenza.io/service": "^2.19.0",
     "@commitlint/cli": "^19.8.0",

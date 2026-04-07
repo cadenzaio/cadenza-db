@@ -1,3 +1,15 @@
+# [2.11.0](https://github.com/cadenzaio/cadenza-db/compare/v2.10.88...v2.11.0) (2026-04-07)
+
+
+### Bug Fixes
+
+* **deps:** bump [@cadenza](https://github.com/cadenza).io/service to 2.19.0 ([d1e40a7](https://github.com/cadenzaio/cadenza-db/commit/d1e40a7a86963410a0919438e5c049f0a6482856))
+
+
+### Features
+
+* harden authority state and runtime history ([de57c4e](https://github.com/cadenzaio/cadenza-db/commit/de57c4ed676fe8341e06410f08e7e7e1d2c7f594))
+
 ## [2.10.88](https://github.com/cadenzaio/cadenza-db/compare/v2.10.87...v2.10.88) (2026-03-22)
 
 
