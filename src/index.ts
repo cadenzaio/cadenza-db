@@ -1,5 +1,22 @@
-import Cadenza from "@cadenza.io/service";
-import { composeServiceRegistrySyncPayload } from "./serviceRegistrySync";
+import Cadenza, {
+  AUTHORITY_SERVICE_MANIFEST_REPORT_INTENT,
+  AUTHORITY_SERVICE_INSTANCE_REGISTER_INTENT,
+  AUTHORITY_SERVICE_INSTANCE_REGISTER_TASK_NAME,
+  AUTHORITY_SERVICE_INSTANCE_TRANSPORT_REGISTER_INTENT,
+  AUTHORITY_SERVICE_INSTANCE_TRANSPORT_REGISTER_TASK_NAME,
+  AUTHORITY_SERVICE_MANIFEST_UPDATED_SIGNAL,
+  normalizeServiceManifestSnapshot,
+} from "@cadenza.io/service";
+import ExecutionPersistenceCoordinator from "./execution/ExecutionPersistenceCoordinator";
+import { registerAuthorityRuntimeStatusTasks } from "./runtimeStatusAuthority";
+import {
+  collectServiceInstanceOriginReconciliationPlans,
+  normalizeServiceInstance,
+  normalizeServiceTransport,
+  planServiceInstanceOriginReconciliation,
+  type ServiceInstanceDescriptor,
+  type ServiceTransportRole,
+} from "./serviceRegistrySync";
 
 let CREATED = false;
 let LOCAL_SYNC_INITIALIZED = false;
@@ -8,6 +25,39 @@ const LOCAL_SYNC_DEBUG_ENABLED =
   typeof process !== "undefined" &&
   typeof process.env === "object" &&
   process.env.CADENZA_DB_SYNC_DEBUG === "true";
+const META_SERVICE_INSTANCE_ORIGIN_RECONCILIATION_REQUESTED =
+  "meta.cadenza_db.service_instance_origin_reconciliation_requested";
+const META_CANONICALIZE_SERVICE_INSTANCE_ORIGINS_REQUESTED =
+  "meta.cadenza_db.canonicalize_service_instance_origins_requested";
+const META_CANONICALIZE_SERVICE_INSTANCE_ORIGINS_EXECUTE =
+  "meta.cadenza_db.canonicalize_service_instance_origins_execute";
+const META_AUTHORITY_REGISTRY_PROJECTION_REQUESTED =
+  "meta.cadenza_db.authority_registry_projection_requested";
+const META_AUTHORITY_REGISTRY_PROJECTION_EXECUTE =
+  "meta.cadenza_db.authority_registry_projection_execute";
+const SERVICE_INSTANCE_ORIGIN_CANONICALIZATION_STARTUP_DELAYS_MS = [
+  250,
+  1500,
+  5000,
+  15000,
+  30000,
+] as const;
+const AUTHORITY_REGISTRY_PROJECTION_STARTUP_DELAYS_MS = [
+  250,
+  1500,
+  5000,
+] as const;
+const AUTHORITY_SERVICE_MANIFEST_ENSURE_DELAYS_MS = [
+  250,
+  1500,
+  5000,
+] as const;
+const META_RETIRE_SUPERSEDED_SERVICE_INSTANCE =
+  "meta.cadenza_db.retire_superseded_service_instance";
+const META_RETIRE_SUPERSEDED_SERVICE_INSTANCE_TRANSPORT =
+  "meta.cadenza_db.retire_superseded_service_instance_transport";
+const META_EVALUATE_TRANSPORTLESS_SERVICE_INSTANCE =
+  "meta.cadenza_db.evaluate_transportless_service_instance";
 
 function logLocalSyncDebug(event: string, payload: Record<string, unknown>) {
   if (!LOCAL_SYNC_DEBUG_ENABLED) {
@@ -35,6 +85,82 @@ function resolveLocalSyncQueryTask(tableName: string) {
   );
 }
 
+function readString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function isPersistedUuid(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value.trim(),
+    )
+  );
+}
+
+function readBoolean(value: unknown): boolean {
+  return value === true;
+}
+
+function readRecord(
+  value: unknown,
+): Record<string, unknown> | null {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+
+  return null;
+}
+
+function normalizeRowArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.filter(
+        (entry): entry is Record<string, unknown> =>
+          !!entry && typeof entry === "object" && !Array.isArray(entry),
+      )
+    : [];
+}
+
+function resolveServiceInstanceTransportTriggerDescriptor(ctx: any): {
+  transportId: string;
+  serviceInstanceId: string;
+  role: ServiceTransportRole | null;
+  origin: string;
+  deleted: boolean;
+} | null {
+  const data = readRecord(ctx?.data);
+  const filter = readRecord(ctx?.queryData?.filter) ?? readRecord(ctx?.filter);
+  const transportId = readString(
+    data?.uuid ?? filter?.uuid ?? ctx?.uuid ?? ctx?.__transportId,
+  );
+  const serviceInstanceId = readString(
+    data?.service_instance_id ??
+      data?.serviceInstanceId ??
+      ctx?.service_instance_id ??
+      ctx?.serviceInstanceId ??
+      ctx?.__serviceInstanceId,
+  );
+  const roleValue = readString(data?.role ?? ctx?.role);
+  const origin = readString(data?.origin ?? ctx?.origin);
+  const deleted = readBoolean(data?.deleted ?? ctx?.deleted);
+  const role =
+    roleValue === "internal" || roleValue === "public"
+      ? (roleValue as ServiceTransportRole)
+      : null;
+
+  if (!isPersistedUuid(transportId)) {
+    return null;
+  }
+
+  return {
+    transportId,
+    serviceInstanceId,
+    role,
+    origin,
+    deleted,
+  };
+}
+
 function buildInsertTriggerWithOnConflictDoNothing(
   signal: string,
   target: string[],
@@ -57,29 +183,22 @@ export function resolveLocalServiceRegistrySyncTasks() {
   const queryServiceInstanceTransportTask = resolveLocalSyncQueryTask(
     "service_instance_transport",
   );
-  const queryIntentToTaskMapTask = resolveLocalSyncQueryTask(
-    "intent_to_task_map",
-  );
-  const querySignalToTaskMapTask = resolveLocalSyncQueryTask(
-    "signal_to_task_map",
-  );
+  const queryServiceManifestTask = resolveLocalSyncQueryTask("service_manifest");
 
   if (
     !queryServiceInstanceTask ||
     !queryServiceInstanceTransportTask ||
-    !queryIntentToTaskMapTask ||
-    !querySignalToTaskMapTask
+    !queryServiceManifestTask
   ) {
     throw new Error(
-      "CadenzaDB local sync query tasks are not available. Expected generated local query tasks for service_instance, service_instance_transport, intent_to_task_map, and signal_to_task_map.",
+      "CadenzaDB local sync query tasks are not available. Expected generated local query tasks for service_instance, service_instance_transport, and service_manifest.",
     );
   }
 
   return {
     queryServiceInstanceTask,
     queryServiceInstanceTransportTask,
-    queryIntentToTaskMapTask,
-    querySignalToTaskMapTask,
+    queryServiceManifestTask,
   };
 }
 
@@ -103,105 +222,14 @@ export default class CadenzaDB {
       const {
         queryServiceInstanceTask,
         queryServiceInstanceTransportTask,
-        queryIntentToTaskMapTask,
-        querySignalToTaskMapTask,
+        queryServiceManifestTask,
       } = resolveLocalServiceRegistrySyncTasks();
 
       logLocalSyncDebug("start_throttle_sync", {
         queryServiceInstanceTask: queryServiceInstanceTask.name,
         queryServiceInstanceTransportTask: queryServiceInstanceTransportTask.name,
-        queryIntentToTaskMapTask: queryIntentToTaskMapTask.name,
-        querySignalToTaskMapTask: querySignalToTaskMapTask.name,
+        queryServiceManifestTask: queryServiceManifestTask.name,
       });
-
-      const prepareSignalSyncTask = Cadenza.createMetaTask(
-        "Prepare for signal sync",
-        (ctx) => {
-          logLocalSyncDebug("prepare_signal_sync", {
-            hasQueryData: typeof ctx.queryData === "object",
-            queryData: ctx.queryData ?? null,
-          });
-          ctx.filter = {
-            isGlobal: true,
-          };
-
-          return ctx;
-        },
-      );
-
-      Cadenza.createUniqueMetaTask("Compile sync data and broadcast", (ctx) => {
-        let joinedContext: any = {};
-        ctx.joinedContexts.forEach((joined: any) => {
-          joinedContext = { ...joinedContext, ...joined };
-        });
-
-        const syncPayload = composeServiceRegistrySyncPayload(joinedContext);
-        syncPayload.__broadcast = true;
-        logLocalSyncDebug("compile_sync_data", {
-          serviceInstances: syncPayload.serviceInstances?.length ?? 0,
-          intentToTaskMaps: syncPayload.intentToTaskMaps?.length ?? 0,
-          signalToTaskMaps: syncPayload.signalToTaskMaps?.length ?? 0,
-        });
-        return syncPayload;
-      })
-        .doAfter(
-          Cadenza.createMetaTask(
-            "Forward service instance sync",
-            (ctx) => {
-              logLocalSyncDebug("forward_service_instance_sync", {
-                rowCount: ctx.rowCount ?? null,
-                serviceInstances: ctx.serviceInstances?.length ?? 0,
-              });
-              return ctx.__syncing;
-            },
-          ).doAfter(queryServiceInstanceTask),
-          Cadenza.createMetaTask(
-            "Forward service transport sync",
-            (ctx) => {
-              logLocalSyncDebug("forward_service_transport_sync", {
-                rowCount: ctx.rowCount ?? null,
-                serviceInstanceTransports:
-                  ctx.serviceInstanceTransports?.length ?? 0,
-              });
-              return ctx.__syncing;
-            },
-          ).doAfter(queryServiceInstanceTransportTask),
-          Cadenza.createMetaTask(
-            "Forward intent to task map sync",
-            (ctx) => {
-              logLocalSyncDebug("forward_intent_to_task_map_sync", {
-                rowCount: ctx.rowCount ?? null,
-                intentToTaskMaps: ctx.intentToTaskMaps?.length ?? 0,
-              });
-              return ctx.__syncing;
-            },
-          ).doAfter(queryIntentToTaskMapTask),
-          Cadenza.createMetaTask(
-            "Forward signal to task map sync",
-            (ctx) => {
-              logLocalSyncDebug("forward_signal_to_task_map_sync", {
-                rowCount: ctx.rowCount ?? null,
-                signalToTaskMaps: ctx.signalToTaskMaps?.length ?? 0,
-              });
-              return ctx.__syncing;
-            },
-          ).doAfter(querySignalToTaskMapTask.doAfter(prepareSignalSyncTask)),
-        )
-        .emits("global.meta.cadenza_db.gathered_sync_data");
-
-      Cadenza.createMetaRoutine("Sync services", [
-        queryServiceInstanceTask,
-        queryServiceInstanceTransportTask,
-        queryIntentToTaskMapTask,
-        prepareSignalSyncTask,
-      ]).doOn("meta.cadenza_db.sync_tick");
-
-      Cadenza.interval(
-        "meta.cadenza_db.sync_tick",
-        { __syncing: true },
-        60000,
-        true,
-      );
 
       Cadenza.emit("meta.sync_requested", {
         __syncing: true,
@@ -219,7 +247,125 @@ export default class CadenzaDB {
     Cadenza.createMetaDatabaseService(
       "CadenzaDB",
       {
-        version: 1,
+        version: 4,
+        migrationPolicy: {
+          adoptExistingVersion: 1,
+          allowDestructive: true,
+          transactionalMode: "per_migration",
+        },
+        migrations: [
+          {
+            version: 1,
+            name: "initial-schema",
+            steps: [{ kind: "sql", sql: "SELECT 1;" }],
+          },
+          {
+            version: 2,
+            name: "drop-routine-execution-routine-version",
+            steps: [
+              {
+                kind: "dropColumn",
+                table: "routine_execution",
+                column: "routine_version",
+                ifExists: true,
+              },
+            ],
+          },
+          {
+            version: 3,
+            name: "service-manifests-and-inline-task-execution-edges",
+            steps: [
+              {
+                kind: "createTable",
+                table: "service_manifest",
+                definition: {
+                  fields: {
+                    service_instance_id: {
+                      type: "uuid",
+                      primary: true,
+                      references: "service_instance(uuid)",
+                      onDelete: "cascade",
+                      required: true,
+                    },
+                    service_name: {
+                      type: "varchar",
+                      references: "service(name)",
+                      onDelete: "cascade",
+                      required: true,
+                      constraints: {
+                        maxLength: 100,
+                      },
+                    },
+                    revision: {
+                      type: "int",
+                      required: true,
+                      default: 1,
+                    },
+                    manifest_hash: {
+                      type: "varchar",
+                      required: true,
+                      constraints: {
+                        maxLength: 255,
+                      },
+                    },
+                    published_at: {
+                      type: "timestamp",
+                      required: true,
+                      default: "now()",
+                    },
+                    manifest: {
+                      type: "jsonb",
+                      required: true,
+                    },
+                    created: {
+                      type: "timestamp",
+                      default: "now()",
+                    },
+                    modified: {
+                      type: "timestamp",
+                      default: "now()",
+                    },
+                    deleted: {
+                      type: "boolean",
+                      default: false,
+                    },
+                  },
+                  indexes: [["service_name", "published_at"]],
+                },
+              },
+              {
+                kind: "dropConstraint",
+                table: "signal_emission",
+                name: "signal_emission_signal_name_fkey",
+                ifExists: true,
+              },
+              {
+                kind: "renameColumn",
+                table: "task_execution",
+                from: "previous_execution_ids",
+                to: "previous_task_execution_ids",
+              },
+              {
+                kind: "dropTable",
+                table: "task_execution_map",
+                ifExists: true,
+                cascade: true,
+              },
+            ],
+          },
+          {
+            version: 4,
+            name: "drop-service-manifest-service-instance-fk",
+            steps: [
+              {
+                kind: "dropConstraint",
+                table: "service_manifest",
+                name: "service_manifest_service_instance_id_fkey",
+                ifExists: true,
+              },
+            ],
+          },
+        ],
         tables: {
           service: {
             fields: {
@@ -1229,10 +1375,6 @@ export default class CadenzaDB {
                 onDelete: "cascade",
                 required: true,
               },
-              routine_version: {
-                type: "int",
-                default: null,
-              },
               execution_trace_id: {
                 type: "uuid",
                 references: "execution_trace(uuid)",
@@ -1293,12 +1435,6 @@ export default class CadenzaDB {
                 },
                 default: 0.0,
               },
-              previous_routine_execution: {
-                type: "uuid",
-                references: "routine_execution(uuid)",
-                onDelete: "cascade",
-                default: null,
-              },
               created: {
                 type: "timestamp",
                 default: "now()",
@@ -1320,28 +1456,14 @@ export default class CadenzaDB {
               [
                 "service_instance_id",
                 "service_name",
-                "routine_version",
                 "execution_trace_id",
                 "is_meta",
                 "errored",
                 "failed",
                 "is_running",
                 "is_complete",
-                "previous_routine_execution",
               ],
             ],
-            customSignals: {
-              triggers: {
-                insert: [
-                  "global.meta.graph_metadata.routine_execution_created",
-                ],
-                update: [
-                  "global.meta.graph_metadata.routine_execution_started",
-                  "global.meta.graph_metadata.routine_execution_ended",
-                  // TODO progress
-                ],
-              },
-            },
           },
 
           task_execution: {
@@ -1404,9 +1526,9 @@ export default class CadenzaDB {
                 onDelete: "cascade",
                 required: true,
               },
-              previous_execution_ids: {
+              previous_task_execution_ids: {
                 type: "jsonb",
-                default: "'{}'",
+                default: "'[]'",
               },
               is_scheduled: {
                 type: "boolean",
@@ -1498,43 +1620,59 @@ export default class CadenzaDB {
                 referenceFields: ["name", "version", "service_name"],
               },
             ],
-            customSignals: {
-              triggers: {
-                insert: ["global.meta.graph_metadata.task_execution_created"],
-                update: [
-                  "global.meta.graph_metadata.task_execution_started",
-                  "global.meta.graph_metadata.task_execution_ended",
-                  // TODO: progress
-                ],
-              },
-            },
           },
 
-          task_execution_map: {
+          service_manifest: {
             fields: {
-              task_execution_id: {
+              service_instance_id: {
                 type: "uuid",
-                references: "task_execution(uuid)",
-                onDelete: "cascade",
+                primary: true,
                 required: true,
               },
-              previous_task_execution_id: {
-                type: "uuid",
-                references: "task_execution(uuid)",
+              service_name: {
+                type: "varchar",
+                references: "service(name)",
                 onDelete: "cascade",
+                required: true,
+                constraints: {
+                  maxLength: 100,
+                },
+              },
+              revision: {
+                type: "int",
+                required: true,
+                default: 1,
+              },
+              manifest_hash: {
+                type: "varchar",
+                required: true,
+                constraints: {
+                  maxLength: 255,
+                },
+              },
+              published_at: {
+                type: "timestamp",
+                required: true,
+                default: "now()",
+              },
+              manifest: {
+                type: "jsonb",
                 required: true,
               },
               created: {
                 type: "timestamp",
                 default: "now()",
               },
-            },
-            primaryKey: ["task_execution_id", "previous_task_execution_id"],
-            customSignals: {
-              triggers: {
-                insert: ["global.meta.graph_metadata.task_execution_mapped"],
+              modified: {
+                type: "timestamp",
+                default: "now()",
+              },
+              deleted: {
+                type: "boolean",
+                default: false,
               },
             },
+            indexes: [["service_name", "published_at"]],
           },
 
           issuer_type: {
@@ -1647,11 +1785,6 @@ export default class CadenzaDB {
             meta: {
               appendOnly: true,
             },
-            customSignals: {
-              triggers: {
-                insert: ["global.meta.graph_metadata.execution_trace_created"],
-              },
-            },
           },
 
           service_instance: {
@@ -1740,26 +1873,6 @@ export default class CadenzaDB {
                 ],
               },
             },
-            customIntents: {
-              query: [
-                {
-                  intent: "meta-service-registry-full-sync",
-                  description:
-                    "Collect data required for distributed service registry full sync.",
-                  input: {
-                    type: "object",
-                    properties: {
-                      syncScope: {
-                        type: "string",
-                        constraints: {
-                          oneOf: ["service-registry-full-sync"],
-                        },
-                      },
-                    },
-                  },
-                },
-              ],
-            },
           },
 
           service_instance_transport: {
@@ -1831,26 +1944,6 @@ export default class CadenzaDB {
                   "meta.service_registry.transport_updated",
                 ],
               },
-            },
-            customIntents: {
-              query: [
-                {
-                  intent: "meta-service-registry-full-sync",
-                  description:
-                    "Collect data required for distributed service registry full sync.",
-                  input: {
-                    type: "object",
-                    properties: {
-                      syncScope: {
-                        type: "string",
-                        constraints: {
-                          oneOf: ["service-registry-full-sync"],
-                        },
-                      },
-                    },
-                  },
-                },
-              ],
             },
           },
 
@@ -1961,11 +2054,6 @@ export default class CadenzaDB {
               "service_instance_client_id",
               "communication_type",
             ],
-            customSignals: {
-              triggers: {
-                insert: ["global.meta.fetch.service_communication_established"],
-              },
-            },
           },
 
           signal_registry: {
@@ -2025,8 +2113,6 @@ export default class CadenzaDB {
             fields: {
               signal_name: {
                 type: "varchar",
-                references: "signal_registry(name)",
-                onDelete: "cascade",
                 required: true,
               },
               is_global: {
@@ -2088,26 +2174,6 @@ export default class CadenzaDB {
                 ],
               },
             },
-            customIntents: {
-              query: [
-                {
-                  intent: "meta-service-registry-full-sync",
-                  description:
-                    "Collect data required for distributed service registry full sync.",
-                  input: {
-                    type: "object",
-                    properties: {
-                      syncScope: {
-                        type: "string",
-                        constraints: {
-                          oneOf: ["service-registry-full-sync"],
-                        },
-                      },
-                    },
-                  },
-                },
-              ],
-            },
           },
 
           signal_emission: {
@@ -2119,8 +2185,6 @@ export default class CadenzaDB {
               },
               signal_name: {
                 type: "varchar",
-                references: "signal_registry(name)",
-                onDelete: "cascade",
                 required: true,
               },
               signal_tag: {
@@ -2211,11 +2275,6 @@ export default class CadenzaDB {
                 referenceFields: ["name", "version", "service_name"],
               },
             ],
-            customSignals: {
-              triggers: {
-                insert: ["global.sub_meta.signal_controller.signal_emitted"],
-              },
-            },
             meta: {
               appendOnly: true,
             },
@@ -2331,26 +2390,6 @@ export default class CadenzaDB {
                 ],
               },
             },
-            customIntents: {
-              query: [
-                {
-                  intent: "meta-service-registry-full-sync",
-                  description:
-                    "Collect data required for distributed service registry full sync.",
-                  input: {
-                    type: "object",
-                    properties: {
-                      syncScope: {
-                        type: "string",
-                        constraints: {
-                          oneOf: ["service-registry-full-sync"],
-                        },
-                      },
-                    },
-                  },
-                },
-              ],
-            },
           },
 
           inquiry: {
@@ -2444,12 +2483,6 @@ export default class CadenzaDB {
                 referenceFields: ["name", "version", "service_name"],
               },
             ],
-            customSignals: {
-              triggers: {
-                insert: ["global.meta.graph_metadata.inquiry_created"],
-                update: ["global.meta.graph_metadata.inquiry_updated"],
-              },
-            },
           },
 
           schedule_registry: {
@@ -2740,7 +2773,7 @@ export default class CadenzaDB {
         meta: {
           dropExisting: options?.dropExisting ?? false,
         },
-      },
+      } as any,
       "This is the official CadenzaDB database service. It is used to store metadata and execution data from the Cadenza framework.",
       {
         cadenzaDB: { connect: false },
@@ -2751,6 +2784,338 @@ export default class CadenzaDB {
         port: options?.port ?? parseInt(process.env.HTTP_PORT ?? "8080"),
       },
     );
+
+    ExecutionPersistenceCoordinator.instance;
+    registerAuthorityRuntimeStatusTasks();
+    const ensureServiceManifestAuthorityTasks = () => {
+      if (Cadenza.get("Report service manifest to authority")) {
+        return true;
+      }
+
+      const localServiceManifestInsertTask =
+        Cadenza.getLocalCadenzaDBInsertTask("service_manifest");
+      if (!localServiceManifestInsertTask) {
+        return false;
+      }
+
+      const reportServiceManifestTask = Cadenza.createMetaTask(
+        "Report service manifest to authority",
+        (ctx) => {
+          const snapshot = normalizeServiceManifestSnapshot(ctx);
+          if (!snapshot) {
+            return false;
+          }
+
+          const manifestRow = {
+            service_instance_id: snapshot.serviceInstanceId,
+            service_name: snapshot.serviceName,
+            revision: snapshot.revision,
+            manifest_hash: snapshot.manifestHash,
+            published_at: snapshot.publishedAt,
+            manifest: snapshot,
+            modified: snapshot.publishedAt,
+            deleted: false,
+          };
+
+          return {
+            ...ctx,
+            __serviceManifestSnapshot: snapshot,
+            data: manifestRow,
+            queryData: {
+              data: manifestRow,
+              onConflict: {
+                target: ["service_instance_id"],
+                action: {
+                  do: "update",
+                  set: {
+                    service_name: "excluded",
+                    revision: "excluded",
+                    manifest_hash: "excluded",
+                    published_at: "excluded",
+                    manifest: "excluded",
+                    modified: "excluded",
+                    deleted: "false",
+                  },
+                  where: "service_manifest.revision <= excluded.revision",
+                },
+              },
+            },
+          };
+        },
+        "Accepts full static service-manifest snapshots from remote services and routes them into the authority manifest store.",
+      ).respondsTo(AUTHORITY_SERVICE_MANIFEST_REPORT_INTENT);
+
+      const finalizeServiceManifestInsertTask = Cadenza.createMetaTask(
+        "Finalize service manifest insert",
+        (ctx, emit) => {
+          const snapshot = normalizeServiceManifestSnapshot(
+            ctx.__serviceManifestSnapshot,
+          );
+          if (!snapshot) {
+            return {};
+          }
+
+          emit(AUTHORITY_SERVICE_MANIFEST_UPDATED_SIGNAL, {
+            serviceName: snapshot.serviceName,
+            serviceInstanceId: snapshot.serviceInstanceId,
+            revision: snapshot.revision,
+            manifestHash: snapshot.manifestHash,
+            publishedAt: snapshot.publishedAt,
+          });
+
+          return {
+            applied: true,
+            serviceName: snapshot.serviceName,
+            serviceInstanceId: snapshot.serviceInstanceId,
+            revision: snapshot.revision,
+          };
+        },
+        "Emits the manifest-derived sync payload after authority upserts a service manifest.",
+        {
+          isHidden: true,
+        },
+      );
+
+      reportServiceManifestTask
+        .then(localServiceManifestInsertTask)
+        .then(finalizeServiceManifestInsertTask);
+
+      return true;
+    };
+
+    ensureServiceManifestAuthorityTasks();
+
+    Cadenza.createMetaTask(
+      "Ensure authority service manifest flow is registered",
+      () => ensureServiceManifestAuthorityTasks(),
+      "Registers the authority manifest-report responder once generated local manifest insert tasks are available.",
+      {
+        register: false,
+        isHidden: true,
+      },
+    ).doOn("meta.service_registry.instance_inserted", "global.meta.sync_controller.synced");
+
+    for (const delayMs of AUTHORITY_SERVICE_MANIFEST_ENSURE_DELAYS_MS) {
+      Cadenza.schedule(
+        "meta.service_registry.instance_inserted",
+        {
+          serviceInstance: {
+            uuid: Cadenza.serviceRegistry.serviceInstanceId,
+            serviceName: Cadenza.serviceRegistry.serviceName,
+          },
+          __reason: "authority_manifest_flow_startup_ensure",
+        },
+        delayMs,
+      );
+    }
+
+    const ensureAuthorityRegistryProjectionTasks = () => {
+      if (Cadenza.get("Project persisted authority registry state")) {
+        return true;
+      }
+
+      let queryServiceInstanceTask;
+      let queryServiceInstanceTransportTask;
+      let queryServiceManifestTask;
+      try {
+        ({
+          queryServiceInstanceTask,
+          queryServiceInstanceTransportTask,
+          queryServiceManifestTask,
+        } = resolveLocalServiceRegistrySyncTasks());
+      } catch {
+        return false;
+      }
+
+      const normalizeProjectedServiceInstancesTask = Cadenza.createMetaTask(
+        "Normalize projected authority service instances",
+        (ctx) => ({
+          ...ctx,
+          serviceInstances: normalizeRowArray(ctx.rows ?? ctx.serviceInstances),
+        }),
+        "Normalizes persisted service-instance query rows for authority runtime projection.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      const normalizeProjectedServiceInstanceTransportsTask = Cadenza.createMetaTask(
+        "Normalize projected authority service instance transports",
+        (ctx) => ({
+          ...ctx,
+          serviceInstanceTransports: normalizeRowArray(
+            ctx.rows ?? ctx.serviceInstanceTransports,
+          ),
+        }),
+        "Normalizes persisted service-instance transport query rows for authority runtime projection.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      const normalizeProjectedServiceManifestsTask = Cadenza.createMetaTask(
+        "Normalize projected authority service manifests",
+        (ctx) => ({
+          ...ctx,
+          serviceManifests: normalizeRowArray(ctx.rows ?? ctx.serviceManifests),
+        }),
+        "Normalizes persisted service-manifest query rows for authority runtime projection.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      const requestAuthorityRegistryProjectionTask = Cadenza.createMetaTask(
+        "Request authority registry projection replay",
+        (ctx) => {
+          const reason =
+            readString(ctx?.__reason) ||
+            readString(ctx?.signal) ||
+            "authority_registry_projection";
+          Cadenza.debounce(
+            META_AUTHORITY_REGISTRY_PROJECTION_EXECUTE,
+            { __reason: reason },
+            50,
+          );
+          return {
+            requested: true,
+            reason,
+          };
+        },
+        "Requests a replay of persisted authority registry rows into runtime state.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn(
+        "global.meta.sync_controller.synced",
+        META_AUTHORITY_REGISTRY_PROJECTION_REQUESTED,
+      );
+
+      const executeAuthorityRegistryProjectionTask = Cadenza.createMetaTask(
+        "Execute authority registry projection replay",
+        (ctx) => ({
+          ...ctx,
+        }),
+        "Executes the persisted authority registry replay fan-out/fan-in graph.",
+        {
+          register: false,
+          isHidden: true,
+          isUnique: true,
+        },
+      ).doOn(META_AUTHORITY_REGISTRY_PROJECTION_EXECUTE);
+
+      const projectAuthorityRegistryStateTask = Cadenza.createMetaTask(
+        "Project persisted authority registry state",
+        (ctx, emit) => {
+          const serviceInstanceRows = normalizeRowArray(ctx.serviceInstances);
+          const transportRows = normalizeRowArray(ctx.serviceInstanceTransports);
+          const manifestRows = normalizeRowArray(ctx.serviceManifests);
+          const transportsByInstance = new Map<string, Array<Record<string, unknown>>>();
+
+          for (const row of transportRows) {
+            const serviceInstanceId = readString(
+              row.service_instance_id ?? row.serviceInstanceId,
+            );
+            if (!serviceInstanceId) {
+              continue;
+            }
+
+            const existing = transportsByInstance.get(serviceInstanceId) ?? [];
+            existing.push(row);
+            transportsByInstance.set(serviceInstanceId, existing);
+          }
+
+          for (const row of serviceInstanceRows) {
+            const uuid = readString(row.uuid);
+            if (!uuid) {
+              continue;
+            }
+
+            emit("global.meta.service_instance.updated", {
+              serviceInstance: {
+                ...row,
+                transports: transportsByInstance.get(uuid) ?? [],
+              },
+            });
+          }
+
+          for (const row of manifestRows) {
+            const snapshot = normalizeServiceManifestSnapshot(
+              row.manifest && typeof row.manifest === "object" ? row.manifest : row,
+            );
+            if (!snapshot) {
+              continue;
+            }
+
+            emit(AUTHORITY_SERVICE_MANIFEST_UPDATED_SIGNAL, {
+              serviceName: snapshot.serviceName,
+              serviceInstanceId: snapshot.serviceInstanceId,
+              revision: snapshot.revision,
+              manifestHash: snapshot.manifestHash,
+              publishedAt: snapshot.publishedAt,
+            });
+          }
+
+          logLocalSyncDebug("projected_authority_registry_state", {
+            serviceInstances: serviceInstanceRows.length,
+            serviceInstanceTransports: transportRows.length,
+            serviceManifests: manifestRows.length,
+          });
+
+          return {
+            projectedServiceInstances: serviceInstanceRows.length,
+            projectedServiceInstanceTransports: transportRows.length,
+            projectedServiceManifests: manifestRows.length,
+          };
+        },
+        "Replays persisted service registry rows into the authority runtime registry after startup.",
+        {
+          register: false,
+          isHidden: true,
+          isUnique: true,
+        },
+      );
+
+      executeAuthorityRegistryProjectionTask.then(
+        queryServiceInstanceTask.then(normalizeProjectedServiceInstancesTask).then(
+          projectAuthorityRegistryStateTask,
+        ),
+        queryServiceInstanceTransportTask.then(
+          normalizeProjectedServiceInstanceTransportsTask,
+        ).then(projectAuthorityRegistryStateTask),
+        queryServiceManifestTask.then(normalizeProjectedServiceManifestsTask).then(
+          projectAuthorityRegistryStateTask,
+        ),
+      );
+
+      for (const delayMs of AUTHORITY_REGISTRY_PROJECTION_STARTUP_DELAYS_MS) {
+        Cadenza.schedule(
+          META_AUTHORITY_REGISTRY_PROJECTION_REQUESTED,
+          {
+            __reason: "authority_startup_registry_projection",
+          },
+          delayMs,
+        );
+      }
+
+      return requestAuthorityRegistryProjectionTask;
+    };
+
+    ensureAuthorityRegistryProjectionTasks();
+
+    Cadenza.createMetaTask(
+      "Ensure authority registry projection flow is registered",
+      () => ensureAuthorityRegistryProjectionTasks(),
+      "Registers the authority persisted-registry projection flow once generated local query tasks are available.",
+      {
+        register: false,
+        isHidden: true,
+      },
+    ).doOn("meta.service_registry.instance_inserted", "global.meta.sync_controller.synced");
 
     const localIntentRegistryInsertTask =
       Cadenza.getLocalCadenzaDBInsertTask("intent_registry");
@@ -2859,6 +3224,1146 @@ export default class CadenzaDB {
         .then(restoreIntentToTaskMapAssociationTask)
         .then(localIntentToTaskMapInsertTask);
     }
+
+    const ensureAuthorityBootstrapRegistrationTasks = () => {
+      const localServiceInstanceInsertTask =
+        Cadenza.getLocalCadenzaDBInsertTask("service_instance");
+      const localServiceInstanceTransportInsertTask =
+        Cadenza.getLocalCadenzaDBInsertTask("service_instance_transport");
+      if (
+        !localServiceInstanceInsertTask ||
+        !localServiceInstanceTransportInsertTask
+      ) {
+        return false;
+      }
+
+      if (!Cadenza.get(AUTHORITY_SERVICE_INSTANCE_REGISTER_TASK_NAME)) {
+        Cadenza.createMetaTask(
+          AUTHORITY_SERVICE_INSTANCE_REGISTER_TASK_NAME,
+          (ctx: any) => {
+            const row =
+              readRecord(ctx?.queryData?.data) ?? readRecord(ctx?.data);
+            if (!row) {
+              return false;
+            }
+
+            return {
+              ...ctx,
+              data: row,
+              queryData: {
+                ...(readRecord(ctx?.queryData) ?? {}),
+                data: row,
+              },
+            };
+          },
+          "Accepts bootstrap service_instance registrations from remote services and routes them into the authority instance store.",
+        )
+          .respondsTo(AUTHORITY_SERVICE_INSTANCE_REGISTER_INTENT)
+          .then(localServiceInstanceInsertTask);
+      }
+
+      if (!Cadenza.get(AUTHORITY_SERVICE_INSTANCE_TRANSPORT_REGISTER_TASK_NAME)) {
+        Cadenza.createMetaTask(
+          AUTHORITY_SERVICE_INSTANCE_TRANSPORT_REGISTER_TASK_NAME,
+          (ctx: any) => {
+            const row =
+              readRecord(ctx?.queryData?.data) ?? readRecord(ctx?.data);
+            if (!row) {
+              return false;
+            }
+
+            return {
+              ...ctx,
+              data: row,
+              queryData: {
+                ...(readRecord(ctx?.queryData) ?? {}),
+                data: row,
+              },
+            };
+          },
+          "Accepts bootstrap service_instance_transport registrations from remote services and routes them into the authority transport store.",
+        )
+          .respondsTo(AUTHORITY_SERVICE_INSTANCE_TRANSPORT_REGISTER_INTENT)
+          .then(localServiceInstanceTransportInsertTask);
+      }
+
+      return true;
+    };
+
+    ensureAuthorityBootstrapRegistrationTasks();
+
+    Cadenza.createMetaTask(
+      "Ensure authority bootstrap registration flow is registered",
+      () => ensureAuthorityBootstrapRegistrationTasks(),
+      "Registers the authority bootstrap registration responders once generated local service-instance insert tasks are available.",
+      {
+        register: false,
+        isHidden: true,
+      },
+    ).doOn("meta.service_registry.instance_inserted", "global.meta.sync_controller.synced");
+
+    const ensureAuthorityOriginCanonicalizationTasks = () => {
+      if (Cadenza.get("Execute service instance origin canonicalization sweep")) {
+        return true;
+      }
+
+      const localServiceInstanceQueryTask =
+        Cadenza.getLocalCadenzaDBQueryTask("service_instance");
+      const localServiceInstanceInsertTask =
+        Cadenza.getLocalCadenzaDBInsertTask("service_instance");
+      const localServiceInstanceTransportInsertTask =
+        Cadenza.getLocalCadenzaDBInsertTask("service_instance_transport");
+      const localServiceInstanceTransportQueryTask =
+        Cadenza.getLocalCadenzaDBQueryTask("service_instance_transport");
+      const localServiceInstanceUpdateTask = Cadenza.getLocalCadenzaDBTask(
+        "service_instance",
+        "update",
+      );
+      const localServiceInstanceTransportUpdateTask =
+        Cadenza.getLocalCadenzaDBTask("service_instance_transport", "update");
+
+      if (
+        !localServiceInstanceQueryTask ||
+        !localServiceInstanceInsertTask ||
+        !localServiceInstanceTransportInsertTask ||
+        !localServiceInstanceTransportQueryTask ||
+        !localServiceInstanceUpdateTask ||
+        !localServiceInstanceTransportUpdateTask
+      ) {
+        return false;
+      }
+
+      Cadenza.createMetaTask(
+        "Log local service instance insert for canonicalization debug",
+        (ctx: any) => {
+          console.log("[CADENZA_DB_CANONICALIZATION] local_instance_insert", {
+            uuid: ctx?.data?.uuid ?? ctx?.uuid ?? null,
+            serviceName:
+              ctx?.data?.service_name ?? ctx?.service_name ?? null,
+            isActive: ctx?.data?.is_active ?? ctx?.is_active ?? null,
+          });
+          return ctx;
+        },
+        "Debug-only trace for local service_instance inserts reaching authority canonicalization wiring.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doAfter(localServiceInstanceInsertTask);
+
+      Cadenza.createMetaTask(
+        "Log local service instance transport insert for canonicalization debug",
+        (ctx: any) => {
+          console.log("[CADENZA_DB_CANONICALIZATION] local_transport_insert", {
+            uuid: ctx?.data?.uuid ?? ctx?.uuid ?? null,
+            serviceInstanceId:
+              ctx?.data?.service_instance_id ?? ctx?.service_instance_id ?? null,
+            origin: ctx?.data?.origin ?? ctx?.origin ?? null,
+          });
+          return ctx;
+        },
+        "Debug-only trace for local service_instance_transport inserts reaching authority canonicalization wiring.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doAfter(localServiceInstanceTransportInsertTask);
+
+      const localServiceInstanceReconciliationQueryTask =
+        localServiceInstanceQueryTask.clone();
+      const localServiceInstanceTransportByInstanceQueryTask =
+        localServiceInstanceTransportQueryTask.clone();
+      const localServiceInstanceTransportlessInstanceQueryTask =
+        localServiceInstanceQueryTask.clone();
+      const localServiceInstanceTransportLookupTask =
+        localServiceInstanceTransportQueryTask.clone();
+      const localServiceInstanceTransportReconciliationQueryTask =
+        localServiceInstanceTransportQueryTask.clone();
+      const localServiceInstanceTransportlessTransportQueryTask =
+        localServiceInstanceTransportQueryTask.clone();
+      const localServiceInstanceOriginCanonicalizationQueryTask =
+        localServiceInstanceQueryTask.clone();
+      const localServiceInstanceTransportOriginCanonicalizationQueryTask =
+        localServiceInstanceTransportQueryTask.clone();
+
+      const prepareOriginReconciliationLookupTask = Cadenza.createMetaTask(
+        "Prepare service instance origin reconciliation lookup",
+        (ctx: any) => {
+          const descriptor = resolveServiceInstanceTransportTriggerDescriptor(ctx);
+          if (!descriptor || descriptor.deleted) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            __originReconciliationTrigger: descriptor,
+            queryData: {
+              filter: {
+                uuid: descriptor.transportId,
+              },
+            },
+          };
+        },
+        "Loads the authoritative transport row that triggered same-origin reconciliation.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      const prepareOriginReconciliationSeedTransportQueryTask =
+        Cadenza.createMetaTask(
+          "Prepare service instance origin reconciliation seed transport query",
+          (ctx: any) => {
+            const updateData =
+              readRecord(ctx?.queryData?.data) ?? readRecord(ctx?.data);
+            if (
+              updateData &&
+              (updateData.deleted === true ||
+                updateData.is_active === false)
+            ) {
+              return false;
+            }
+
+            const instanceId = readString(
+              ctx?.queryData?.data?.uuid ??
+                ctx?.queryData?.filter?.uuid ??
+                ctx?.data?.uuid ??
+                ctx?.filter?.uuid ??
+                ctx?.uuid ??
+                ctx?.__serviceInstanceId,
+            );
+            if (!instanceId) {
+              return false;
+            }
+
+            return {
+              ...ctx,
+              __originReconciliationAuthoritativeInstanceId: instanceId,
+              queryData: {
+                filter: {
+                  service_instance_id: instanceId,
+                  deleted: false,
+                },
+              },
+            };
+          },
+          "Loads undeleted transports for an authoritative service instance so same-origin reconciliation can retry after instance-first writes.",
+          {
+            register: false,
+            isHidden: true,
+          },
+        );
+
+      const emitOriginReconciliationRequestsFromInstanceTask =
+        Cadenza.createUniqueMetaTask(
+          "Emit service instance origin reconciliation requests",
+          (ctx: any) => {
+            const authoritativeInstanceId = readString(
+              ctx.__originReconciliationAuthoritativeInstanceId,
+            );
+            if (!authoritativeInstanceId) {
+              return false;
+            }
+
+            const transports = Array.isArray(ctx.serviceInstanceTransports)
+              ? ctx.serviceInstanceTransports
+                  .map(normalizeServiceTransport)
+                  .filter(Boolean)
+              : [];
+
+            let emitted = 0;
+            for (const transport of transports) {
+              if (
+                !transport ||
+                transport.deleted ||
+                transport.serviceInstanceId !== authoritativeInstanceId
+              ) {
+                continue;
+              }
+
+              emitted += 1;
+              Cadenza.emit(
+                META_SERVICE_INSTANCE_ORIGIN_RECONCILIATION_REQUESTED,
+                {
+                  ...ctx,
+                  data: {
+                    uuid: transport.uuid,
+                    service_instance_id: transport.serviceInstanceId,
+                    role: transport.role,
+                    origin: transport.origin,
+                    deleted: transport.deleted,
+                  },
+                  queryData: {
+                    filter: {
+                      uuid: transport.uuid,
+                    },
+                  },
+                },
+              );
+            }
+
+            return emitted > 0
+              ? {
+                  ...ctx,
+                  emittedOriginReconciliationRequests: emitted,
+                }
+              : false;
+          },
+          "Replays same-origin reconciliation from authoritative service_instance writes once their transports exist.",
+          {
+            register: false,
+            isHidden: true,
+          },
+        );
+
+      const prepareOriginReconciliationScanTask = Cadenza.createMetaTask(
+        "Prepare service instance origin reconciliation scan",
+        (ctx: any) => {
+          const authoritativeTransport = normalizeServiceTransport(
+            ctx.serviceInstanceTransports?.[0],
+          );
+
+          if (!authoritativeTransport || authoritativeTransport.deleted) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            __originReconciliation: {
+              authoritativeInstanceId: authoritativeTransport.serviceInstanceId,
+              role: authoritativeTransport.role,
+              origin: authoritativeTransport.origin,
+            },
+          };
+        },
+        "Captures the exact same-origin transport ownership key from the authoritative row.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      const prepareServiceInstanceReconciliationQueryTask = Cadenza.createMetaTask(
+        "Prepare service instance origin reconciliation instance query",
+        (ctx: any) => ({
+          ...ctx,
+          queryData: {
+            filter: {
+              deleted: false,
+            },
+          },
+        }),
+        "Loads active and inactive service_instance rows so authority can choose one same-origin owner.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      const prepareServiceTransportReconciliationQueryTask =
+        Cadenza.createMetaTask(
+          "Prepare service instance origin reconciliation transport query",
+          (ctx: any) => {
+            const descriptor = ctx.__originReconciliation;
+            if (!descriptor?.role || !descriptor?.origin) {
+              return false;
+            }
+
+            return {
+              ...ctx,
+              queryData: {
+                filter: {
+                  role: descriptor.role,
+                  origin: descriptor.origin,
+                  deleted: false,
+                },
+              },
+            };
+          },
+          "Loads matching same-origin transports for authority duplicate reconciliation.",
+          {
+            register: false,
+            isHidden: true,
+          },
+        );
+
+      const computeOriginReconciliationPlanTask = Cadenza.createUniqueMetaTask(
+        "Compute service instance origin reconciliation plan",
+        (ctx: any) => {
+          let joinedContext: any = { ...ctx };
+          for (const joined of Array.isArray(ctx.joinedContexts)
+            ? ctx.joinedContexts
+            : []) {
+            joinedContext = {
+              ...joinedContext,
+              ...joined,
+            };
+          }
+
+          const descriptor = joinedContext.__originReconciliation;
+          if (!descriptor?.authoritativeInstanceId || !descriptor?.role || !descriptor?.origin) {
+            return false;
+          }
+
+          const serviceInstances = Array.isArray(joinedContext.serviceInstances)
+            ? joinedContext.serviceInstances
+                .map(normalizeServiceInstance)
+                .filter(Boolean)
+            : [];
+          const serviceInstanceTransports = Array.isArray(
+            joinedContext.serviceInstanceTransports,
+          )
+            ? joinedContext.serviceInstanceTransports
+                .map(normalizeServiceTransport)
+                .filter(Boolean)
+            : [];
+          const authoritativeInstance = serviceInstances.find(
+            (instance: ServiceInstanceDescriptor) =>
+              instance.uuid === descriptor.authoritativeInstanceId,
+          );
+
+          if (!authoritativeInstance?.serviceName) {
+            return false;
+          }
+
+          const plan = planServiceInstanceOriginReconciliation({
+            authoritativeInstanceId: descriptor.authoritativeInstanceId,
+            serviceName: authoritativeInstance.serviceName,
+            role: descriptor.role,
+            origin: descriptor.origin,
+            serviceInstances,
+            serviceInstanceTransports,
+          });
+
+          if (
+            plan.retiredInstanceIds.length === 0 &&
+            plan.retiredTransportIds.length === 0
+          ) {
+            return false;
+          }
+
+          for (const instanceId of plan.retiredInstanceIds) {
+            Cadenza.emit(META_RETIRE_SUPERSEDED_SERVICE_INSTANCE, {
+              __originReconciliationPlan: plan,
+              __originReconciliation: descriptor,
+              data: {
+                is_active: false,
+                is_non_responsive: false,
+                deleted: false,
+              },
+              queryData: {
+                filter: {
+                  uuid: instanceId,
+                },
+              },
+            });
+          }
+
+          for (const transportId of plan.retiredTransportIds) {
+            Cadenza.emit(META_RETIRE_SUPERSEDED_SERVICE_INSTANCE_TRANSPORT, {
+              __originReconciliationPlan: plan,
+              __originReconciliation: descriptor,
+              __retiredServiceInstanceIds: plan.retiredInstanceIds,
+              data: {
+                deleted: true,
+              },
+              queryData: {
+                filter: {
+                  uuid: transportId,
+                },
+              },
+            });
+          }
+
+          for (const instanceId of plan.retiredInstanceIds) {
+            Cadenza.emit(META_EVALUATE_TRANSPORTLESS_SERVICE_INSTANCE, {
+              __originReconciliationPlan: plan,
+              queryData: {
+                filter: {
+                  uuid: instanceId,
+                },
+              },
+            });
+          }
+
+          return {
+            ...joinedContext,
+            __originReconciliationPlan: plan,
+          };
+        },
+        "Collapses duplicate same-origin service-instance ownership on authority.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      Cadenza.createMetaTask(
+        "Retire superseded same-origin service instance",
+        (ctx: any) => {
+          const instanceId = readString(ctx?.queryData?.filter?.uuid);
+          if (!instanceId) {
+            return false;
+          }
+
+          const nextFilter = {
+            uuid: instanceId,
+          };
+          const nextData = {
+            is_active: false,
+            is_non_responsive: false,
+            deleted: false,
+          };
+
+          return {
+            ...ctx,
+            filter: {
+              ...(ctx.filter ?? {}),
+              ...nextFilter,
+            },
+            data: {
+              ...(ctx.data ?? {}),
+              ...nextData,
+            },
+            queryData: {
+              ...(ctx.queryData ?? {}),
+              filter: {
+                ...(ctx.queryData?.filter ?? ctx.filter ?? {}),
+                ...nextFilter,
+              },
+              data: {
+                ...(ctx.queryData?.data ?? ctx.data ?? {}),
+                ...nextData,
+              },
+            },
+          };
+        },
+        "Marks superseded same-origin service instances inactive on authority.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      )
+        .doOn(META_RETIRE_SUPERSEDED_SERVICE_INSTANCE)
+        .then(localServiceInstanceUpdateTask);
+
+      Cadenza.createMetaTask(
+        "Delete superseded same-origin service transport",
+        (ctx: any) => {
+          const transportId = readString(ctx?.queryData?.filter?.uuid);
+          if (!transportId) {
+            return false;
+          }
+
+          const nextFilter = {
+            uuid: transportId,
+          };
+          const nextData = {
+            deleted: true,
+          };
+
+          return {
+            ...ctx,
+            filter: {
+              ...(ctx.filter ?? {}),
+              ...nextFilter,
+            },
+            data: {
+              ...(ctx.data ?? {}),
+              ...nextData,
+            },
+            queryData: {
+              ...(ctx.queryData ?? {}),
+              filter: {
+                ...(ctx.queryData?.filter ?? ctx.filter ?? {}),
+                ...nextFilter,
+              },
+              data: {
+                ...(ctx.queryData?.data ?? ctx.data ?? {}),
+                ...nextData,
+              },
+            },
+          };
+        },
+        "Deletes superseded same-origin service transports on authority.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      )
+        .doOn(META_RETIRE_SUPERSEDED_SERVICE_INSTANCE_TRANSPORT)
+        .then(localServiceInstanceTransportUpdateTask);
+
+      const prepareTransportlessInstanceTransportQueryTask =
+        Cadenza.createMetaTask(
+          "Prepare transportless service instance transport query",
+          (ctx: any) => {
+            const instanceId = readString(ctx?.queryData?.filter?.uuid);
+            if (!instanceId) {
+              return false;
+            }
+
+            return {
+              ...ctx,
+              __transportlessServiceInstanceId: instanceId,
+              queryData: {
+                filter: {
+                  service_instance_id: instanceId,
+                  deleted: false,
+                },
+              },
+            };
+          },
+          "Loads undeleted transports for a retired instance candidate.",
+          {
+            register: false,
+            isHidden: true,
+          },
+        );
+
+      const prepareTransportlessInstanceQueryTask = Cadenza.createMetaTask(
+        "Prepare transportless service instance query",
+        (ctx: any) => {
+          const instanceId = readString(ctx?.queryData?.filter?.uuid);
+          if (!instanceId) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            __transportlessServiceInstanceId: instanceId,
+            queryData: {
+              filter: {
+                uuid: instanceId,
+                deleted: false,
+              },
+            },
+          };
+        },
+        "Loads the retired instance candidate so authority can clear stale active rows with no transports.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      const retireTransportlessServiceInstanceTask = Cadenza.createUniqueMetaTask(
+        "Retire transportless service instance",
+        (ctx: any) => {
+          let joinedContext: any = { ...ctx };
+          for (const joined of Array.isArray(ctx.joinedContexts)
+            ? ctx.joinedContexts
+            : []) {
+            joinedContext = {
+              ...joinedContext,
+              ...joined,
+            };
+          }
+
+          const instanceId = readString(
+            joinedContext.__transportlessServiceInstanceId ??
+              joinedContext.queryData?.filter?.uuid,
+          );
+          if (!instanceId) {
+            return false;
+          }
+
+          const undeletedTransports = Array.isArray(
+            joinedContext.serviceInstanceTransports,
+          )
+            ? joinedContext.serviceInstanceTransports
+                .map(normalizeServiceTransport)
+                .filter(Boolean)
+            : [];
+          if (undeletedTransports.length > 0) {
+            return false;
+          }
+
+          const instance = Array.isArray(joinedContext.serviceInstances)
+            ? joinedContext.serviceInstances
+                .map(normalizeServiceInstance)
+                .filter(Boolean)
+                .find(
+                  (candidate: ServiceInstanceDescriptor) =>
+                    candidate.uuid === instanceId,
+                )
+            : null;
+          if (!instance || instance.deleted || !instance.isActive) {
+            return false;
+          }
+
+          Cadenza.emit(META_RETIRE_SUPERSEDED_SERVICE_INSTANCE, {
+            __transportlessServiceInstanceId: instanceId,
+            data: {
+              is_active: false,
+              is_non_responsive: false,
+              deleted: false,
+            },
+            queryData: {
+              filter: {
+                uuid: instanceId,
+              },
+            },
+          });
+
+          return {
+            ...joinedContext,
+            __retiredTransportlessServiceInstanceId: instanceId,
+          };
+        },
+        "Clears stale active instance rows that no longer own any undeleted transports.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      prepareTransportlessInstanceTransportQueryTask.doOn(
+        META_EVALUATE_TRANSPORTLESS_SERVICE_INSTANCE,
+      );
+      prepareTransportlessInstanceQueryTask.doOn(
+        META_EVALUATE_TRANSPORTLESS_SERVICE_INSTANCE,
+      );
+      localServiceInstanceTransportlessTransportQueryTask
+        .doAfter(prepareTransportlessInstanceTransportQueryTask)
+        .then(retireTransportlessServiceInstanceTask);
+      localServiceInstanceTransportlessInstanceQueryTask
+        .doAfter(prepareTransportlessInstanceQueryTask)
+        .then(retireTransportlessServiceInstanceTask);
+
+      prepareOriginReconciliationLookupTask.doAfter(
+        localServiceInstanceTransportInsertTask,
+        localServiceInstanceTransportUpdateTask,
+      );
+      prepareOriginReconciliationLookupTask.doOn(
+        META_SERVICE_INSTANCE_ORIGIN_RECONCILIATION_REQUESTED,
+      );
+      prepareOriginReconciliationSeedTransportQueryTask
+        .doAfter(
+          localServiceInstanceInsertTask,
+        )
+        .attachSignal("global.meta.service_instance.created");
+      localServiceInstanceTransportByInstanceQueryTask
+        .doAfter(prepareOriginReconciliationSeedTransportQueryTask)
+        .then(emitOriginReconciliationRequestsFromInstanceTask);
+      localServiceInstanceTransportLookupTask.doAfter(
+        prepareOriginReconciliationLookupTask,
+      );
+      prepareOriginReconciliationScanTask.doAfter(
+        localServiceInstanceTransportLookupTask,
+      );
+      prepareServiceInstanceReconciliationQueryTask.doAfter(
+        prepareOriginReconciliationScanTask,
+      );
+      prepareServiceTransportReconciliationQueryTask.doAfter(
+        prepareOriginReconciliationScanTask,
+      );
+      localServiceInstanceReconciliationQueryTask
+        .doAfter(prepareServiceInstanceReconciliationQueryTask)
+        .then(computeOriginReconciliationPlanTask);
+      localServiceInstanceTransportReconciliationQueryTask
+        .doAfter(prepareServiceTransportReconciliationQueryTask)
+        .then(computeOriginReconciliationPlanTask);
+
+      const requestServiceInstanceOriginCanonicalizationSweepTask =
+        Cadenza.createUniqueMetaTask(
+          "Request service instance origin canonicalization sweep",
+          (ctx: any) => {
+            console.log("[CADENZA_DB_CANONICALIZATION] request", {
+              reason: ctx?.__reason ?? null,
+              attempt: ctx?.__attempt ?? null,
+              serviceName: ctx?.data?.service_name ?? ctx?.service_name ?? null,
+              transportOrigin: ctx?.data?.origin ?? ctx?.origin ?? null,
+            });
+            Cadenza.debounce(
+              META_CANONICALIZE_SERVICE_INSTANCE_ORIGINS_EXECUTE,
+              {
+                ...ctx,
+              },
+              100,
+            );
+            return true;
+          },
+          "Requests one debounced authority canonicalization sweep for same-origin service-instance ownership.",
+          {
+            isHidden: true,
+          },
+        );
+
+      requestServiceInstanceOriginCanonicalizationSweepTask.doOn(
+        META_CANONICALIZE_SERVICE_INSTANCE_ORIGINS_REQUESTED,
+        "global.meta.sync_controller.synced",
+        "global.meta.service_instance.created",
+        "meta.service_instance.created",
+        "global.meta.service_registry.instance_registered",
+        "meta.service_registry.instance_registered",
+        "global.meta.service_registry.service_handshake",
+        "global.meta.service_registry.service_not_responding",
+        "global.meta.service_registry.deleted",
+        "global.meta.service_instance_transport.created",
+        "meta.service_instance_transport.created",
+        "global.meta.service_registry.transport_registered",
+        "meta.service_registry.transport_registered",
+        "global.meta.service_registry.transport_updated",
+        "meta.service_registry.transport_updated",
+      );
+      requestServiceInstanceOriginCanonicalizationSweepTask.doAfter(
+        localServiceInstanceInsertTask,
+        localServiceInstanceTransportInsertTask,
+      );
+
+      const executeServiceInstanceOriginCanonicalizationSweepTask =
+        Cadenza.createUniqueMetaTask(
+          "Execute service instance origin canonicalization sweep",
+          (ctx: any) => {
+            console.log("[CADENZA_DB_CANONICALIZATION] execute", {
+              reason: ctx?.__reason ?? null,
+              attempt: ctx?.__attempt ?? null,
+              serviceName: ctx?.data?.service_name ?? ctx?.service_name ?? null,
+              transportOrigin: ctx?.data?.origin ?? ctx?.origin ?? null,
+            });
+            return {
+              ...ctx,
+            };
+          },
+          "Executes one canonicalization sweep after the debounced request window closes.",
+          {
+            isHidden: true,
+          },
+        ).doOn(META_CANONICALIZE_SERVICE_INSTANCE_ORIGINS_EXECUTE);
+      executeServiceInstanceOriginCanonicalizationSweepTask.doAfter(
+        localServiceInstanceInsertTask,
+        localServiceInstanceTransportInsertTask,
+      );
+
+      const prepareOriginCanonicalizationInstanceQueryTask =
+        Cadenza.createMetaTask(
+          "Prepare service instance origin canonicalization instance query",
+          (ctx: any) => ({
+            ...ctx,
+            queryData: {
+              filter: {
+                deleted: false,
+              },
+            },
+          }),
+          "Loads all undeleted service_instance rows for authority same-origin canonicalization.",
+          {
+            register: false,
+            isHidden: true,
+          },
+        );
+
+      const normalizeOriginCanonicalizationInstanceRowsTask =
+        Cadenza.createMetaTask(
+          "Normalize service instance origin canonicalization instance rows",
+          (ctx: any) => ({
+            ...ctx,
+            serviceInstances: normalizeRowArray(ctx.rows ?? ctx.serviceInstances),
+          }),
+          "Normalizes queried service_instance rows for same-origin canonicalization.",
+          {
+            register: false,
+            isHidden: true,
+          },
+        );
+
+      const prepareOriginCanonicalizationTransportQueryTask =
+        Cadenza.createMetaTask(
+          "Prepare service instance origin canonicalization transport query",
+          (ctx: any) => ({
+            ...ctx,
+            queryData: {
+              filter: {
+                deleted: false,
+              },
+            },
+          }),
+          "Loads all undeleted service_instance_transport rows for authority same-origin canonicalization.",
+          {
+            register: false,
+            isHidden: true,
+          },
+        );
+
+      const normalizeOriginCanonicalizationTransportRowsTask =
+        Cadenza.createMetaTask(
+          "Normalize service instance origin canonicalization transport rows",
+          (ctx: any) => ({
+            ...ctx,
+            serviceInstanceTransports: normalizeRowArray(
+              ctx.rows ?? ctx.serviceInstanceTransports,
+            ),
+          }),
+          "Normalizes queried service_instance_transport rows for same-origin canonicalization.",
+          {
+            register: false,
+            isHidden: true,
+          },
+        );
+
+      const canonicalizeServiceInstanceOriginsTask = Cadenza.createUniqueMetaTask(
+        "Canonicalize service instance origins",
+        (ctx: any) => {
+          let joinedContext: any = { ...ctx };
+          for (const joined of Array.isArray(ctx.joinedContexts)
+            ? ctx.joinedContexts
+            : []) {
+            joinedContext = {
+              ...joinedContext,
+              ...joined,
+            };
+          }
+
+          const serviceInstances = Array.isArray(joinedContext.serviceInstances)
+            ? joinedContext.serviceInstances
+                .map(normalizeServiceInstance)
+                .filter(Boolean)
+            : [];
+          const serviceInstanceTransports = Array.isArray(
+            joinedContext.serviceInstanceTransports,
+          )
+            ? joinedContext.serviceInstanceTransports
+                .map(normalizeServiceTransport)
+                .filter(Boolean)
+            : [];
+
+          const plans = collectServiceInstanceOriginReconciliationPlans({
+            serviceInstances,
+            serviceInstanceTransports,
+          });
+
+          console.log("[CADENZA_DB_CANONICALIZATION] plans", {
+            serviceInstanceCount: serviceInstances.length,
+            serviceTransportCount: serviceInstanceTransports.length,
+            planCount: plans.length,
+            plans: plans.map((plan) => ({
+              serviceName: plan.serviceName ?? null,
+              role: plan.role ?? null,
+              origin: plan.origin ?? null,
+              winningInstanceId: plan.winningInstanceId ?? null,
+              retiredInstanceIds: plan.retiredInstanceIds,
+              retiredTransportIds: plan.retiredTransportIds,
+            })),
+          });
+
+          if (!plans.length) {
+            return false;
+          }
+
+          for (const plan of plans) {
+            for (const instanceId of plan.retiredInstanceIds) {
+              Cadenza.emit(META_RETIRE_SUPERSEDED_SERVICE_INSTANCE, {
+                __originCanonicalizationPlan: plan,
+                data: {
+                  is_active: false,
+                  is_non_responsive: false,
+                  deleted: false,
+                },
+                queryData: {
+                  filter: {
+                    uuid: instanceId,
+                  },
+                },
+              });
+            }
+
+            for (const transportId of plan.retiredTransportIds) {
+              Cadenza.emit(META_RETIRE_SUPERSEDED_SERVICE_INSTANCE_TRANSPORT, {
+                __originCanonicalizationPlan: plan,
+                __retiredServiceInstanceIds: plan.retiredInstanceIds,
+                data: {
+                  deleted: true,
+                },
+                queryData: {
+                  filter: {
+                    uuid: transportId,
+                  },
+                },
+              });
+            }
+
+            for (const instanceId of plan.retiredInstanceIds) {
+              Cadenza.emit(META_EVALUATE_TRANSPORTLESS_SERVICE_INSTANCE, {
+                __originCanonicalizationPlan: plan,
+                queryData: {
+                  filter: {
+                    uuid: instanceId,
+                  },
+                },
+              });
+            }
+          }
+
+          return {
+            ...joinedContext,
+            __originCanonicalizationPlans: plans,
+          };
+        },
+        "Canonicalizes same-origin service-instance ownership from queried authority state.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      const splitSupersededServiceInstanceRetirementsTask =
+        Cadenza.createMetaTask(
+          "Split superseded same-origin service instance retirements",
+          function* (ctx: any) {
+            const plans = Array.isArray(ctx?.__originCanonicalizationPlans)
+              ? ctx.__originCanonicalizationPlans
+              : [];
+
+            console.log("[CADENZA_DB_CANONICALIZATION] split_instances", {
+              planCount: plans.length,
+            });
+
+            for (const plan of plans) {
+              for (const instanceId of Array.isArray(plan?.retiredInstanceIds)
+                ? plan.retiredInstanceIds
+                : []) {
+                if (!readString(instanceId)) {
+                  continue;
+                }
+
+                yield {
+                  ...ctx,
+                  __originCanonicalizationPlan: plan,
+                  filter: {
+                    uuid: instanceId,
+                  },
+                  data: {
+                    is_active: false,
+                    is_non_responsive: false,
+                    deleted: false,
+                  },
+                  queryData: {
+                    filter: {
+                      uuid: instanceId,
+                    },
+                    data: {
+                      is_active: false,
+                      is_non_responsive: false,
+                      deleted: false,
+                    },
+                  },
+                };
+              }
+            }
+          },
+          "Projects canonicalized same-origin instance retirements directly into local update tasks.",
+          {
+            register: false,
+            isHidden: true,
+          },
+        );
+
+      const splitSupersededServiceTransportRetirementsTask =
+        Cadenza.createMetaTask(
+          "Split superseded same-origin service transport retirements",
+          function* (ctx: any) {
+            const plans = Array.isArray(ctx?.__originCanonicalizationPlans)
+              ? ctx.__originCanonicalizationPlans
+              : [];
+
+            console.log("[CADENZA_DB_CANONICALIZATION] split_transports", {
+              planCount: plans.length,
+            });
+
+            for (const plan of plans) {
+              for (const transportId of Array.isArray(plan?.retiredTransportIds)
+                ? plan.retiredTransportIds
+                : []) {
+                if (!readString(transportId)) {
+                  continue;
+                }
+
+                yield {
+                  ...ctx,
+                  __originCanonicalizationPlan: plan,
+                  __retiredServiceInstanceIds: Array.isArray(
+                    plan?.retiredInstanceIds,
+                  )
+                    ? plan.retiredInstanceIds
+                    : [],
+                  filter: {
+                    uuid: transportId,
+                  },
+                  data: {
+                    deleted: true,
+                  },
+                  queryData: {
+                    filter: {
+                      uuid: transportId,
+                    },
+                    data: {
+                      deleted: true,
+                    },
+                  },
+                };
+              }
+            }
+          },
+          "Projects canonicalized same-origin transport retirements directly into local update tasks.",
+          {
+            register: false,
+            isHidden: true,
+          },
+        );
+
+      prepareOriginCanonicalizationInstanceQueryTask.doAfter(
+        executeServiceInstanceOriginCanonicalizationSweepTask,
+      );
+      localServiceInstanceOriginCanonicalizationQueryTask
+        .doAfter(prepareOriginCanonicalizationInstanceQueryTask)
+        .then(normalizeOriginCanonicalizationInstanceRowsTask);
+      prepareOriginCanonicalizationTransportQueryTask.doAfter(
+        normalizeOriginCanonicalizationInstanceRowsTask,
+      );
+      localServiceInstanceTransportOriginCanonicalizationQueryTask
+        .doAfter(prepareOriginCanonicalizationTransportQueryTask)
+        .then(normalizeOriginCanonicalizationTransportRowsTask);
+      normalizeOriginCanonicalizationTransportRowsTask.then(
+        canonicalizeServiceInstanceOriginsTask,
+      );
+      canonicalizeServiceInstanceOriginsTask.then(
+        splitSupersededServiceInstanceRetirementsTask,
+        splitSupersededServiceTransportRetirementsTask,
+      );
+      splitSupersededServiceInstanceRetirementsTask.then(
+        localServiceInstanceUpdateTask,
+      );
+      splitSupersededServiceTransportRetirementsTask.then(
+        localServiceInstanceTransportUpdateTask,
+      );
+
+      for (const [index, delayMs] of SERVICE_INSTANCE_ORIGIN_CANONICALIZATION_STARTUP_DELAYS_MS.entries()) {
+        Cadenza.schedule(
+          META_CANONICALIZE_SERVICE_INSTANCE_ORIGINS_REQUESTED,
+          {
+            __attempt: index + 1,
+            __reason: "cadenza_db_startup",
+          },
+          delayMs,
+        );
+
+      }
+      return true;
+    };
+
+    ensureAuthorityOriginCanonicalizationTasks();
+
+    Cadenza.createMetaTask(
+      "Ensure authority origin canonicalization flow is registered",
+      () => ensureAuthorityOriginCanonicalizationTasks(),
+      "Registers the authority same-origin canonicalization flow once generated local service-instance tasks are available.",
+      {
+        register: false,
+        isHidden: true,
+      },
+    ).doOn("meta.service_registry.instance_inserted", "global.meta.sync_controller.synced");
   }
 }
 

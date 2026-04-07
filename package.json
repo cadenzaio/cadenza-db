@@ -6,7 +6,8 @@
     "start": "node --loader ts-node/esm src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "build": "tsup"
+    "build": "tsup",
+    "prepack": "yarn build"
   },
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -60,10 +61,13 @@
   ],
   "author": "Emil Forsvall",
   "license": "ISC",
+  "peerDependencies": {
+    "@cadenza.io/service": "^2.18.3"
+  },
   "dependencies": {
-    "@cadenza.io/service": "2.18.3"
   },
   "devDependencies": {
+    "@cadenza.io/service": "^2.18.3",
     "@commitlint/cli": "^19.8.0",
     "@commitlint/config-conventional": "^19.8.0",
     "@semantic-release/changelog": "^6.0.3",
