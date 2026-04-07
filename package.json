@@ -62,12 +62,12 @@
   "author": "Emil Forsvall",
   "license": "ISC",
   "peerDependencies": {
-    "@cadenza.io/service": "^2.18.3"
+    "@cadenza.io/service": "^2.19.0"
   },
   "dependencies": {
   },
   "devDependencies": {
-    "@cadenza.io/service": "^2.18.3",
+    "@cadenza.io/service": "^2.19.0",
     "@commitlint/cli": "^19.8.0",
     "@commitlint/config-conventional": "^19.8.0",
     "@semantic-release/changelog": "^6.0.3",
