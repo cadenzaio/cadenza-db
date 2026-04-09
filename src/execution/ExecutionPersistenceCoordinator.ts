@@ -253,6 +253,7 @@ function normalizeRoutineExecutionInsertData(
   data: Record<string, any>,
 ): Record<string, any> {
   const normalizedData = { ...data };
+
   const traceId = readString(
     normalizedData.execution_trace_id ?? normalizedData.executionTraceId,
   );
