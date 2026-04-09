@@ -1948,7 +1948,6 @@ export default class CadenzaDB {
           },
 
           service_instance_health_snapshot: {
-            // TODO
             fields: {
               service_instance_id: {
                 type: "uuid",
