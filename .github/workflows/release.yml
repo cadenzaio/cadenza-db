@@ -25,6 +25,14 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org/
 
+      - name: Use npm 11.11.0
+        run: npm install -g npm@11.11.0
+
+      - name: Print tool versions
+        run: |
+          node --version
+          npm --version
+
       - name: Install dependencies
         run: yarn install --frozen-lockfile
 
