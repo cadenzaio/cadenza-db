@@ -1,3 +1,10 @@
+# [2.12.0](https://github.com/cadenzaio/cadenza-db/compare/v2.11.3...v2.12.0) (2026-04-11)
+
+
+### Features
+
+* add authority-owned service instance leases ([36e075f](https://github.com/cadenzaio/cadenza-db/commit/36e075ffa417cdf3526ded557590a04bec7dba21))
+
 ## [2.11.3](https://github.com/cadenzaio/cadenza-db/compare/v2.11.2...v2.11.3) (2026-04-11)
 
 
