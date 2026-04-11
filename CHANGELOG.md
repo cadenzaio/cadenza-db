@@ -1,3 +1,20 @@
+## [2.11.2](https://github.com/cadenzaio/cadenza-db/compare/v2.11.1...v2.11.2) (2026-04-11)
+
+
+### Bug Fixes
+
+* configure npm auth explicitly in release ([bfe5c19](https://github.com/cadenzaio/cadenza-db/commit/bfe5c19e63eb1323e4492ebe0b833444c6b945b3))
+* **deps:** bump [@cadenza](https://github.com/cadenza).io/service to 2.20.0 ([1022dc4](https://github.com/cadenzaio/cadenza-db/commit/1022dc416f718ccef00143df18cd5692125f2bf4))
+* **deps:** just to bump ([75635a0](https://github.com/cadenzaio/cadenza-db/commit/75635a02d65efb44f9c0e3da7030ca2a5b6f0407))
+* expose npm token to release workflow ([4c625e9](https://github.com/cadenzaio/cadenza-db/commit/4c625e91d742a5420e5a26a2a1f1470e591367e9))
+* persist npm userconfig for release ([c419cf5](https://github.com/cadenzaio/cadenza-db/commit/c419cf54d8b5daca484ec4f4c720500d1bb93f0a))
+* pin npm version for db release ([d335a0f](https://github.com/cadenzaio/cadenza-db/commit/d335a0f7e687b9a2214612c43cf3b2292dcc3f16))
+* publish db package outside semantic-release npm plugin ([5f66ae7](https://github.com/cadenzaio/cadenza-db/commit/5f66ae72b0689d1364a808da8a565433d384acd0))
+* replace semantic-release npm prepare with local pack step ([306b523](https://github.com/cadenzaio/cadenza-db/commit/306b5231489a1a8cb91de8d85a9bf37f9638ac90))
+* stabilize cadenza db recovery and pressure handling ([4570ae9](https://github.com/cadenzaio/cadenza-db/commit/4570ae9caf4042780eb892d526719e6168ff9a2c))
+* use node 24 for db release ([9d6249a](https://github.com/cadenzaio/cadenza-db/commit/9d6249a3a7050d363ad4f40e1fb77cef70017ad7))
+* use yarn pack for db release tarball ([cd2a43b](https://github.com/cadenzaio/cadenza-db/commit/cd2a43b28d9b0ca26af0c6a7d859bb517d593f04))
+
 ## [2.11.1](https://github.com/cadenzaio/cadenza-db/compare/v2.11.0...v2.11.1) (2026-04-08)
 
 
