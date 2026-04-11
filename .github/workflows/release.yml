@@ -55,3 +55,14 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish package tarball
+        run: |
+          if ls release-artifacts/*.tgz >/dev/null 2>&1; then
+            npm publish release-artifacts/*.tgz --userconfig "$NPM_CONFIG_USERCONFIG" --registry https://registry.npmjs.org/ --access public
+          else
+            echo "No release tarball produced; skipping npm publish."
+          fi
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
