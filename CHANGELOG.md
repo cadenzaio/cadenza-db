@@ -1,3 +1,10 @@
+## [2.11.3](https://github.com/cadenzaio/cadenza-db/compare/v2.11.2...v2.11.3) (2026-04-11)
+
+
+### Bug Fixes
+
+* publish local db tarball by absolute path ([d580d09](https://github.com/cadenzaio/cadenza-db/commit/d580d09e755a1cf106266383c0587b8a34c4d716))
+
 ## [2.11.2](https://github.com/cadenzaio/cadenza-db/compare/v2.11.1...v2.11.2) (2026-04-11)
 
 
