@@ -21,5 +21,5 @@ export async function prepare(pluginConfig, context) {
 
   logger.log("Packing npm tarball into %s", tarballDir);
   await mkdir(tarballDir, { recursive: true });
-  await run("npm", ["pack", "--pack-destination", tarballDir], cwd);
+  await run("yarn", ["pack", "--filename", path.join(tarballDir, "package.tgz")], cwd);
 }
