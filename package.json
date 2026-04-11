@@ -28,9 +28,8 @@
       "@semantic-release/release-notes-generator",
       "@semantic-release/changelog",
       [
-        "@semantic-release/npm",
+        "./scripts/semantic-release-pack.mjs",
         {
-          "npmPublish": false,
           "tarballDir": "release-artifacts"
         }
       ],
