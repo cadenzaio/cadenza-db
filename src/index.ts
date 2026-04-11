@@ -5,7 +5,9 @@ import Cadenza, {
   AUTHORITY_SERVICE_INSTANCE_TRANSPORT_REGISTER_INTENT,
   AUTHORITY_SERVICE_INSTANCE_TRANSPORT_REGISTER_TASK_NAME,
   AUTHORITY_SERVICE_MANIFEST_UPDATED_SIGNAL,
+  explodeServiceManifestSnapshots,
   normalizeServiceManifestSnapshot,
+  selectLatestServiceManifestSnapshots,
 } from "@cadenza.io/service";
 import ExecutionPersistenceCoordinator from "./execution/ExecutionPersistenceCoordinator";
 import { registerAuthorityRuntimeStatusTasks } from "./runtimeStatusAuthority";
@@ -25,6 +27,11 @@ const LOCAL_SYNC_DEBUG_ENABLED =
   typeof process !== "undefined" &&
   typeof process.env === "object" &&
   process.env.CADENZA_DB_SYNC_DEBUG === "true";
+const CANONICALIZATION_TRACE_ENABLED =
+  typeof process !== "undefined" &&
+  typeof process.env === "object" &&
+  (process.env.CADENZA_DB_CANONICALIZATION_TRACE === "1" ||
+    process.env.CADENZA_DB_CANONICALIZATION_TRACE === "true");
 const META_SERVICE_INSTANCE_ORIGIN_RECONCILIATION_REQUESTED =
   "meta.cadenza_db.service_instance_origin_reconciliation_requested";
 const META_CANONICALIZE_SERVICE_INSTANCE_ORIGINS_REQUESTED =
@@ -35,6 +42,14 @@ const META_AUTHORITY_REGISTRY_PROJECTION_REQUESTED =
   "meta.cadenza_db.authority_registry_projection_requested";
 const META_AUTHORITY_REGISTRY_PROJECTION_EXECUTE =
   "meta.cadenza_db.authority_registry_projection_execute";
+const META_MANIFEST_ENTITY_PROJECTION_REQUESTED =
+  "meta.cadenza_db.manifest_entity_projection_requested";
+const META_MANIFEST_ASSOCIATION_PROJECTION_REQUESTED =
+  "meta.cadenza_db.manifest_association_projection_requested";
+const MANIFEST_ASSOCIATION_PROJECTION_DEBOUNCE_MS = 50;
+const MANIFEST_ASSOCIATION_PROJECTION_ACCUMULATOR_TTL_MS = 60000;
+const MANIFEST_ASSOCIATION_REPLAY_FLUSH_DELAYS_MS = [250, 1500, 5000] as const;
+const STRUCTURAL_NAME_MAX_LENGTH = 255;
 const SERVICE_INSTANCE_ORIGIN_CANONICALIZATION_STARTUP_DELAYS_MS = [
   250,
   1500,
@@ -47,17 +62,59 @@ const AUTHORITY_REGISTRY_PROJECTION_STARTUP_DELAYS_MS = [
   1500,
   5000,
 ] as const;
+const AUTHORITY_REGISTRY_PROJECTION_ACCUMULATOR_TTL_MS = 60000;
 const AUTHORITY_SERVICE_MANIFEST_ENSURE_DELAYS_MS = [
+  25,
   250,
   1500,
   5000,
 ] as const;
+const RUNTIME_DIAGNOSTICS_ENABLED =
+  typeof process !== "undefined" &&
+  typeof process.env === "object" &&
+  (process.env.CADENZA_DB_RUNTIME_DIAGNOSTICS === "1" ||
+    process.env.CADENZA_DB_RUNTIME_DIAGNOSTICS === "true");
+const RUNTIME_DIAGNOSTICS_INTERVAL_MS = 15000;
 const META_RETIRE_SUPERSEDED_SERVICE_INSTANCE =
   "meta.cadenza_db.retire_superseded_service_instance";
 const META_RETIRE_SUPERSEDED_SERVICE_INSTANCE_TRANSPORT =
   "meta.cadenza_db.retire_superseded_service_instance_transport";
 const META_EVALUATE_TRANSPORTLESS_SERVICE_INSTANCE =
   "meta.cadenza_db.evaluate_transportless_service_instance";
+const authorityRegistryProjectionAccumulator = new Map<
+  string,
+  {
+    updatedAt: number;
+    serviceInstances?: Array<Record<string, unknown>>;
+    serviceInstanceTransports?: Array<Record<string, unknown>>;
+    serviceManifests?: Array<Record<string, unknown>>;
+  }
+>();
+const pendingAuthorityRegistryProjectionIds: string[] = [];
+let activeAuthorityRegistryProjectionId: string | null = null;
+const authorityRegistryProjectionPayloads = new Map<
+  string,
+  {
+    updatedAt: number;
+    serviceInstances: Array<Record<string, unknown>>;
+    serviceInstanceTransports: Array<Record<string, unknown>>;
+    serviceManifests: Array<Record<string, unknown>>;
+  }
+>();
+type ManifestAssociationEntityKind =
+  | "task"
+  | "signal"
+  | "intent"
+  | "actor"
+  | "routine";
+const manifestAssociationProjectionAccumulator = new Map<
+  string,
+  {
+    updatedAt: number;
+    payload: Record<string, unknown>;
+    pendingEntityKinds: Set<ManifestAssociationEntityKind>;
+  }
+>();
 
 function logLocalSyncDebug(event: string, payload: Record<string, unknown>) {
   if (!LOCAL_SYNC_DEBUG_ENABLED) {
@@ -65,6 +122,331 @@ function logLocalSyncDebug(event: string, payload: Record<string, unknown>) {
   }
 
   console.log(`${SYNC_DEBUG_PREFIX} ${event}`, payload);
+}
+
+function logCanonicalizationTrace(
+  event: string,
+  payload: Record<string, unknown>,
+) {
+  if (!CANONICALIZATION_TRACE_ENABLED) {
+    return;
+  }
+
+  console.log(`[CADENZA_DB_CANONICALIZATION] ${event}`, payload);
+}
+
+function scheduleLocalEnsureRetry(callback: () => void, delayMs: number) {
+  if (typeof globalThis?.setTimeout !== "function") {
+    return;
+  }
+
+  globalThis.setTimeout(() => {
+    try {
+      callback();
+    } catch (error) {
+      console.error("[CADENZA_DB_SYNC_DEBUG] ensure retry failed", {
+        delayMs,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, delayMs);
+}
+
+function logRuntimeDiagnostics() {
+  if (!RUNTIME_DIAGNOSTICS_ENABLED) {
+    return;
+  }
+
+  try {
+    const actors = Cadenza.getAllActors();
+    const serviceRegistry = Cadenza.serviceRegistry as unknown as {
+      instances?: Map<string, unknown[]>;
+      remoteRoutesByKey?: Map<string, unknown>;
+      remoteSignals?: Map<string, Set<string>>;
+      remoteIntents?: Map<string, Set<string>>;
+      deputies?: Map<string, unknown[]>;
+    };
+    const graphRegistry = Cadenza.registry as unknown as {
+      tasks?: Map<string, unknown>;
+      routines?: Map<string, unknown>;
+    };
+    const inquiryBroker = (Cadenza as unknown as {
+      inquiryBroker?: { intents?: Map<string, unknown> };
+    }).inquiryBroker;
+    const actorSummaries = actors
+      .map((actor) => {
+        const actorWithKeys = actor as unknown as {
+          listActorKeys?: () => string[];
+        };
+        const actorKeys =
+          typeof actorWithKeys.listActorKeys === "function"
+            ? actorWithKeys.listActorKeys()
+            : [];
+        return {
+          actorName: actor.spec.name,
+          actorKeyCount: actorKeys.length,
+        };
+      })
+      .sort((left, right) => right.actorKeyCount - left.actorKeyCount)
+      .slice(0, 10);
+
+    const totalActorKeys = actors.reduce(
+      (total, actor) => {
+        const actorWithKeys = actor as unknown as {
+          listActorKeys?: () => string[];
+        };
+        return (
+          total +
+          (typeof actorWithKeys.listActorKeys === "function"
+            ? actorWithKeys.listActorKeys().length
+            : 0)
+        );
+      },
+      0,
+    );
+    const memory = process.memoryUsage();
+
+    console.log("[CADENZA_DB_RUNTIME_DIAGNOSTICS]", {
+      rssBytes: memory.rss,
+      heapUsedBytes: memory.heapUsed,
+      heapTotalBytes: memory.heapTotal,
+      externalBytes: memory.external,
+      arrayBuffersBytes: memory.arrayBuffers,
+      taskCount: graphRegistry.tasks?.size ?? 0,
+      routineCount: graphRegistry.routines?.size ?? 0,
+      intentCount: inquiryBroker?.intents?.size ?? 0,
+      serviceInstanceGroupCount: serviceRegistry.instances?.size ?? 0,
+      totalServiceInstances:
+        Array.from(serviceRegistry.instances?.values() ?? []).reduce(
+          (total, instances) => total + instances.length,
+          0,
+        ) ?? 0,
+      remoteRouteCount: serviceRegistry.remoteRoutesByKey?.size ?? 0,
+      remoteSignalCount:
+        Array.from(serviceRegistry.remoteSignals?.values() ?? []).reduce(
+          (total, signals) => total + signals.size,
+          0,
+        ) ?? 0,
+      remoteIntentCount:
+        Array.from(serviceRegistry.remoteIntents?.values() ?? []).reduce(
+          (total, intents) => total + intents.size,
+          0,
+        ) ?? 0,
+      deputyGroupCount: serviceRegistry.deputies?.size ?? 0,
+      actorCount: actors.length,
+      totalActorKeys,
+      topActors: actorSummaries,
+    });
+
+    Cadenza.signalBroker?.logMemoryFootprint("cadenza-db");
+  } catch (error) {
+    console.error("[CADENZA_DB_RUNTIME_DIAGNOSTICS] failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function startRuntimeDiagnosticsLoop() {
+  if (
+    !RUNTIME_DIAGNOSTICS_ENABLED ||
+    typeof globalThis?.setInterval !== "function"
+  ) {
+    return;
+  }
+
+  globalThis.setInterval(() => {
+    logRuntimeDiagnostics();
+  }, RUNTIME_DIAGNOSTICS_INTERVAL_MS);
+}
+
+function pruneAuthorityRegistryProjectionAccumulator(now: number) {
+  for (const [projectionId, entry] of authorityRegistryProjectionAccumulator) {
+    if (
+      now - entry.updatedAt >
+      AUTHORITY_REGISTRY_PROJECTION_ACCUMULATOR_TTL_MS
+    ) {
+      authorityRegistryProjectionAccumulator.delete(projectionId);
+    }
+  }
+}
+
+function pruneAuthorityRegistryProjectionPayloads(now: number) {
+  for (const [projectionId, entry] of authorityRegistryProjectionPayloads) {
+    if (
+      now - entry.updatedAt >
+      AUTHORITY_REGISTRY_PROJECTION_ACCUMULATOR_TTL_MS
+    ) {
+      authorityRegistryProjectionPayloads.delete(projectionId);
+    }
+  }
+}
+
+function registerPendingAuthorityRegistryProjectionId(projectionId: string) {
+  pendingAuthorityRegistryProjectionIds.push(projectionId);
+}
+
+function resolveAuthorityRegistryProjectionId(
+  value: unknown,
+  options?: {
+    consumePending?: boolean;
+  },
+): string | null {
+  const ctx = readRecord(value);
+  const directProjectionId = readString(
+    ctx?.__projectionId ?? ctx?.projectionId,
+  );
+  if (directProjectionId) {
+    if (pendingAuthorityRegistryProjectionIds[0] === directProjectionId) {
+      pendingAuthorityRegistryProjectionIds.shift();
+    }
+    activeAuthorityRegistryProjectionId = directProjectionId;
+    return directProjectionId;
+  }
+
+  if (options?.consumePending !== false) {
+    const pendingProjectionId = pendingAuthorityRegistryProjectionIds.shift();
+    if (pendingProjectionId) {
+      activeAuthorityRegistryProjectionId = pendingProjectionId;
+      return pendingProjectionId;
+    }
+  }
+
+  return activeAuthorityRegistryProjectionId;
+}
+
+function pruneManifestAssociationProjectionAccumulator(now: number) {
+  for (const [key, entry] of manifestAssociationProjectionAccumulator) {
+    if (
+      now - entry.updatedAt >
+      MANIFEST_ASSOCIATION_PROJECTION_ACCUMULATOR_TTL_MS
+    ) {
+      manifestAssociationProjectionAccumulator.delete(key);
+    }
+  }
+}
+
+function buildManifestAssociationProjectionKey(
+  payload: Record<string, unknown>,
+): string {
+  const explicitKey = readString(payload.__manifestProjectionKey);
+  if (explicitKey) {
+    return explicitKey;
+  }
+
+  const serviceName = readString(
+    payload.serviceName ?? payload.__projectedServiceName,
+  );
+  if (serviceName) {
+    return serviceName;
+  }
+
+  return `manifest-association-${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
+}
+
+function collectManifestAssociationPendingEntityKinds(
+  payload: Record<string, unknown>,
+): Set<ManifestAssociationEntityKind> {
+  const kinds = new Set<ManifestAssociationEntityKind>();
+
+  if (normalizeRowArray(payload.__projectedTasks).length > 0) {
+    kinds.add("task");
+  }
+  if (normalizeRowArray(payload.__projectedSignals).length > 0) {
+    kinds.add("signal");
+  }
+  if (normalizeRowArray(payload.__projectedIntents).length > 0) {
+    kinds.add("intent");
+  }
+  if (normalizeRowArray(payload.__projectedActors).length > 0) {
+    kinds.add("actor");
+  }
+  if (normalizeRowArray(payload.__projectedRoutines).length > 0) {
+    kinds.add("routine");
+  }
+
+  return kinds;
+}
+
+function queueManifestAssociationProjection(
+  payload: Record<string, unknown>,
+): boolean {
+  const hasAssociations =
+    normalizeRowArray(payload.__projectedDirectionalTaskMaps).length > 0 ||
+    normalizeRowArray(payload.__projectedSignalToTaskMaps).length > 0 ||
+    normalizeRowArray(payload.__projectedIntentToTaskMaps).length > 0 ||
+    normalizeRowArray(payload.__projectedActorTaskMaps).length > 0 ||
+    normalizeRowArray(payload.__projectedTaskToRoutineMaps).length > 0;
+
+  if (!hasAssociations) {
+    return false;
+  }
+
+  const now = Date.now();
+  pruneManifestAssociationProjectionAccumulator(now);
+  const key = buildManifestAssociationProjectionKey(payload);
+  manifestAssociationProjectionAccumulator.set(
+    key,
+    {
+      updatedAt: now,
+      payload: {
+        ...payload,
+        __manifestProjectionKey: key,
+      },
+      pendingEntityKinds: collectManifestAssociationPendingEntityKinds(payload),
+    },
+  );
+
+  return true;
+}
+
+function flushPendingManifestAssociationProjections(key?: string) {
+  const now = Date.now();
+  pruneManifestAssociationProjectionAccumulator(now);
+
+  let flushed = 0;
+  for (const [entryKey, entry] of manifestAssociationProjectionAccumulator) {
+    if (key && entryKey !== key) {
+      continue;
+    }
+    Cadenza.debounce(
+      META_MANIFEST_ASSOCIATION_PROJECTION_REQUESTED,
+      entry.payload,
+      MANIFEST_ASSOCIATION_PROJECTION_DEBOUNCE_MS,
+    );
+    manifestAssociationProjectionAccumulator.delete(entryKey);
+    flushed += 1;
+  }
+
+  return flushed;
+}
+
+function markManifestAssociationProjectionEntityPersisted(
+  ctx: Record<string, unknown> | null,
+) {
+  const projectionKey = readString(ctx?.__manifestProjectionKey);
+  const entityKind = readString(ctx?.__manifestEntityKind) as
+    | ManifestAssociationEntityKind
+    | "";
+  if (!projectionKey || !entityKind) {
+    return 0;
+  }
+
+  const entry = manifestAssociationProjectionAccumulator.get(projectionKey);
+  if (!entry) {
+    return 0;
+  }
+
+  entry.updatedAt = Date.now();
+  entry.pendingEntityKinds.delete(entityKind);
+
+  if (entry.pendingEntityKinds.size > 0) {
+    manifestAssociationProjectionAccumulator.set(projectionKey, entry);
+    return 0;
+  }
+
+  return flushPendingManifestAssociationProjections(projectionKey);
 }
 
 function buildLegacyLocalSyncQueryTaskName(tableName: string): string {
@@ -119,6 +501,322 @@ function normalizeRowArray(value: unknown): Array<Record<string, unknown>> {
           !!entry && typeof entry === "object" && !Array.isArray(entry),
       )
     : [];
+}
+
+function readNumber(value: unknown): number | null {
+  const numeric =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim().length > 0
+        ? Number(value)
+        : NaN;
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function readInteger(value: unknown): number | null {
+  const numeric = readNumber(value);
+  return numeric === null ? null : Math.trunc(numeric);
+}
+
+function pickManifestTaskProjectionRow(
+  row: Record<string, unknown>,
+): Record<string, unknown> {
+  const version = readInteger(row.version);
+  const layerIndex = readInteger(row.layer_index ?? row.layerIndex);
+  const timeout = readInteger(row.timeout);
+  const concurrency = readInteger(row.concurrency);
+  const retryCount = readInteger(row.retry_count ?? row.retryCount);
+  const retryDelay = readInteger(row.retry_delay ?? row.retryDelay);
+  const retryDelayMax = readInteger(row.retry_delay_max ?? row.retryDelayMax);
+  const retryDelayFactor = readNumber(
+    row.retry_delay_factor ?? row.retryDelayFactor,
+  );
+  const generatedBy = readString(row.generated_by ?? row.generatedBy);
+
+  return {
+    name: readString(row.name),
+    description: readString(row.description),
+    function_string:
+      readString(row.function_string) || readString(row.functionString) || "",
+    tag_id_getter:
+      readString(row.tag_id_getter) || readString(row.tagIdGetter) || null,
+    layer_index: layerIndex ?? 0,
+    service_name:
+      readString(row.service_name) || readString(row.serviceName) || null,
+    timeout: timeout ?? 0,
+    is_unique: readBoolean(row.is_unique ?? row.isUnique),
+    is_meta: readBoolean(row.is_meta ?? row.isMeta),
+    is_sub_meta: readBoolean(row.is_sub_meta ?? row.isSubMeta),
+    is_deputy: readBoolean(row.is_deputy ?? row.isDeputy),
+    is_ephemeral: readBoolean(row.is_ephemeral ?? row.isEphemeral),
+    is_signal: readBoolean(row.is_signal ?? row.isSignal),
+    is_throttled: readBoolean(row.is_throttled ?? row.isThrottled),
+    is_debounce: readBoolean(row.is_debounce ?? row.isDebounce),
+    is_hidden: readBoolean(row.is_hidden ?? row.isHidden),
+    concurrency: concurrency ?? 0,
+    retry_count: retryCount ?? 0,
+    retry_delay: retryDelay ?? 0,
+    retry_delay_max: retryDelayMax ?? 0,
+    retry_delay_factor: retryDelayFactor ?? 1,
+    input_context_schema:
+      readRecord(row.input_context_schema ?? row.inputContextSchema) ?? null,
+    output_context_schema:
+      readRecord(row.output_context_schema ?? row.outputContextSchema) ?? null,
+    validate_input_context: readBoolean(
+      row.validate_input_context ?? row.validateInputContext,
+    ),
+    validate_output_context: readBoolean(
+      row.validate_output_context ?? row.validateOutputContext,
+    ),
+    signals: readRecord(row.signals) ?? {},
+    intents: readRecord(row.intents) ?? {},
+    flags: readRecord(row.flags) ?? {},
+    generated_by: generatedBy || null,
+    version: version ?? 1,
+    deleted: false,
+  };
+}
+
+function resolveServiceManifestSnapshotFromContext(
+  value: unknown,
+): ReturnType<typeof normalizeServiceManifestSnapshot> {
+  const ctx = value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+  if (!ctx) {
+    return null;
+  }
+
+  const directCandidates = [
+    ctx.__serviceManifestSnapshot,
+    ctx.serviceManifest,
+    ctx.service_manifest,
+    ctx.manifest,
+    ctx.data,
+  ];
+
+  for (const candidate of directCandidates) {
+    const record =
+      candidate && typeof candidate === "object" && !Array.isArray(candidate)
+        ? (candidate as Record<string, unknown>)
+        : null;
+    if (!record) {
+      continue;
+    }
+
+    const normalized = normalizeServiceManifestSnapshot(
+      record.manifest && typeof record.manifest === "object"
+        ? record.manifest
+        : record,
+    );
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
+}
+
+type ProjectedManifestStructuralRows = {
+  tasks: Array<Record<string, unknown>>;
+  signals: Array<Record<string, unknown>>;
+  intents: Array<Record<string, unknown>>;
+  actors: Array<Record<string, unknown>>;
+  routines: Array<Record<string, unknown>>;
+  directionalTaskMaps: Array<Record<string, unknown>>;
+  signalToTaskMaps: Array<Record<string, unknown>>;
+  intentToTaskMaps: Array<Record<string, unknown>>;
+  actorTaskMaps: Array<Record<string, unknown>>;
+  taskToRoutineMaps: Array<Record<string, unknown>>;
+};
+
+function emitManifestStructuralProjectionRequests(
+  emit: (signal: string, ctx: Record<string, unknown>) => void,
+  input: {
+    serviceManifests: Array<Record<string, unknown>>;
+    serviceName?: string | null;
+  },
+): ProjectedManifestStructuralRows {
+  const projectedRows = collectProjectedManifestStructuralRowsFromManifestRows(input);
+  const associationPayload = buildManifestAssociationProjectionPayload({
+    serviceName: input.serviceName,
+    projectedRows,
+  });
+  const projectionKey = readString(associationPayload.__manifestProjectionKey);
+  const queuedAssociationProjection =
+    queueManifestAssociationProjection(associationPayload);
+  const hasEntityRows =
+    projectedRows.tasks.length > 0 ||
+    projectedRows.signals.length > 0 ||
+    projectedRows.intents.length > 0 ||
+    projectedRows.actors.length > 0 ||
+    projectedRows.routines.length > 0;
+
+  logLocalSyncDebug("manifest_structural_projection_requested", {
+    serviceName: input.serviceName ?? null,
+    taskCount: projectedRows.tasks.length,
+    signalCount: projectedRows.signals.length,
+    intentCount: projectedRows.intents.length,
+    actorCount: projectedRows.actors.length,
+    routineCount: projectedRows.routines.length,
+    directionalTaskMapCount: projectedRows.directionalTaskMaps.length,
+    signalToTaskMapCount: projectedRows.signalToTaskMaps.length,
+    intentToTaskMapCount: projectedRows.intentToTaskMaps.length,
+    actorTaskMapCount: projectedRows.actorTaskMaps.length,
+    taskToRoutineMapCount: projectedRows.taskToRoutineMaps.length,
+    queuedAssociationProjection,
+  });
+
+  emit(META_MANIFEST_ENTITY_PROJECTION_REQUESTED, {
+    __projectedTasks: projectedRows.tasks,
+    __projectedSignals: projectedRows.signals,
+    __projectedIntents: projectedRows.intents,
+    __projectedActors: projectedRows.actors,
+    __projectedRoutines: projectedRows.routines,
+    ...associationPayload,
+  });
+
+  if (queuedAssociationProjection && !hasEntityRows) {
+    flushPendingManifestAssociationProjections(projectionKey);
+  }
+
+  if (!input.serviceName && queuedAssociationProjection && hasEntityRows) {
+    for (const delayMs of MANIFEST_ASSOCIATION_REPLAY_FLUSH_DELAYS_MS) {
+      scheduleLocalEnsureRetry(() => {
+        const flushed = flushPendingManifestAssociationProjections(projectionKey);
+        logLocalSyncDebug("manifest_association_replay_flush_attempt", {
+          projectionKey,
+          delayMs,
+          flushed,
+        });
+      }, delayMs);
+    }
+  }
+
+  return projectedRows;
+}
+
+export function collectProjectedManifestStructuralRowsFromManifestRows(input: {
+  serviceManifests: Array<Record<string, unknown>>;
+  serviceName?: string | null;
+}): ProjectedManifestStructuralRows {
+  const targetServiceName =
+    typeof input.serviceName === "string" ? input.serviceName.trim() : "";
+  const snapshots = normalizeRowArray(input.serviceManifests)
+    .map((row) =>
+      normalizeServiceManifestSnapshot(
+        row.manifest && typeof row.manifest === "object" ? row.manifest : row,
+      ),
+    )
+    .filter((snapshot): snapshot is NonNullable<typeof snapshot> => !!snapshot);
+
+  const latestSnapshots = selectLatestServiceManifestSnapshots(snapshots).filter(
+    (snapshot) =>
+      targetServiceName.length === 0 || snapshot.serviceName === targetServiceName,
+  );
+  const latestSnapshotsByService = new Map<
+    string,
+    (typeof latestSnapshots)[number]
+  >();
+
+  for (const snapshot of latestSnapshots) {
+    const current = latestSnapshotsByService.get(snapshot.serviceName);
+    if (!current) {
+      latestSnapshotsByService.set(snapshot.serviceName, snapshot);
+      continue;
+    }
+
+    if (snapshot.revision > current.revision) {
+      latestSnapshotsByService.set(snapshot.serviceName, snapshot);
+      continue;
+    }
+
+    if (
+      snapshot.revision === current.revision &&
+      snapshot.publishedAt.localeCompare(current.publishedAt) > 0
+    ) {
+      latestSnapshotsByService.set(snapshot.serviceName, snapshot);
+    }
+  }
+
+  const exploded = explodeServiceManifestSnapshots(
+    Array.from(latestSnapshotsByService.values()).sort((left, right) =>
+      left.serviceName.localeCompare(right.serviceName),
+    ),
+  );
+
+  return {
+    tasks: (exploded.tasks as Array<Record<string, unknown>>).map((row) =>
+      pickManifestTaskProjectionRow(row),
+    ),
+    signals: (exploded.signals as Array<Record<string, unknown>>).map((row) => ({
+      ...row,
+      deleted: false,
+    })),
+    intents: (exploded.intents as Array<Record<string, unknown>>).map((row) => ({
+      ...row,
+      deleted: false,
+    })),
+    actors: (exploded.actors as Array<Record<string, unknown>>).map((row) => ({
+      ...row,
+      deleted: false,
+    })),
+    routines: (exploded.routines as Array<Record<string, unknown>>).map((row) => ({
+      ...row,
+      deleted: false,
+    })),
+    directionalTaskMaps: (
+      exploded.directionalTaskMaps as Array<Record<string, unknown>>
+    ).map((row) => ({
+      ...row,
+      deleted: false,
+    })),
+    signalToTaskMaps: (
+      exploded.signalToTaskMaps as Array<Record<string, unknown>>
+    ).map((row) => ({
+      ...row,
+      deleted: false,
+    })),
+    intentToTaskMaps: (
+      exploded.intentToTaskMaps as Array<Record<string, unknown>>
+    ).map((row) => ({
+      ...row,
+      deleted: false,
+    })),
+    actorTaskMaps: (
+      exploded.actorTaskMaps as Array<Record<string, unknown>>
+    ).map((row) => ({
+      ...row,
+      deleted: false,
+    })),
+    taskToRoutineMaps: (
+      exploded.taskToRoutineMaps as Array<Record<string, unknown>>
+    ).map((row) => ({
+      ...row,
+      deleted: false,
+    })),
+  };
+}
+
+function buildManifestAssociationProjectionPayload(input: {
+  serviceName?: string | null;
+  projectedRows: ProjectedManifestStructuralRows;
+}) {
+  const serviceName =
+    typeof input.serviceName === "string" ? input.serviceName.trim() : "";
+  const projectionKey = buildManifestAssociationProjectionKey({
+    serviceName,
+    __projectedServiceName: serviceName || undefined,
+  });
+
+  return {
+    serviceName: serviceName || null,
+    __projectedServiceName: serviceName || undefined,
+    __manifestProjectionKey: projectionKey,
+    __projectedDirectionalTaskMaps: input.projectedRows.directionalTaskMaps,
+    __projectedSignalToTaskMaps: input.projectedRows.signalToTaskMaps,
+    __projectedIntentToTaskMaps: input.projectedRows.intentToTaskMaps,
+    __projectedActorTaskMaps: input.projectedRows.actorTaskMaps,
+    __projectedTaskToRoutineMaps: input.projectedRows.taskToRoutineMaps,
+  } satisfies Record<string, unknown>;
 }
 
 function resolveServiceInstanceTransportTriggerDescriptor(ctx: any): {
@@ -247,7 +945,7 @@ export default class CadenzaDB {
     Cadenza.createMetaDatabaseService(
       "CadenzaDB",
       {
-        version: 4,
+        version: 5,
         migrationPolicy: {
           adoptExistingVersion: 1,
           allowDestructive: true,
@@ -362,6 +1060,24 @@ export default class CadenzaDB {
                 table: "service_manifest",
                 name: "service_manifest_service_instance_id_fkey",
                 ifExists: true,
+              },
+            ],
+          },
+          {
+            version: 5,
+            name: "widen-structural-name-columns",
+            steps: [
+              {
+                kind: "sql",
+                sql: `ALTER TABLE task ALTER COLUMN name TYPE VARCHAR(${STRUCTURAL_NAME_MAX_LENGTH});`,
+              },
+              {
+                kind: "sql",
+                sql: `ALTER TABLE actor ALTER COLUMN name TYPE VARCHAR(${STRUCTURAL_NAME_MAX_LENGTH});`,
+              },
+              {
+                kind: "sql",
+                sql: `ALTER TABLE routine ALTER COLUMN name TYPE VARCHAR(${STRUCTURAL_NAME_MAX_LENGTH});`,
               },
             ],
           },
@@ -510,7 +1226,7 @@ export default class CadenzaDB {
                 type: "varchar",
                 required: true,
                 constraints: {
-                  maxLength: 100,
+                  maxLength: STRUCTURAL_NAME_MAX_LENGTH,
                 },
               },
               description: {
@@ -673,17 +1389,6 @@ export default class CadenzaDB {
             },
             primaryKey: ["name", "service_name", "version"],
             indexes: [["is_meta", "is_deputy", "generated_by"]],
-            customSignals: {
-              triggers: {
-                insert: [
-                  buildInsertTriggerWithOnConflictDoNothing(
-                    "global.meta.graph_metadata.task_created",
-                    ["name", "service_name", "version"],
-                  ),
-                ],
-                update: ["global.meta.graph_metadata.task_updated"],
-              },
-            },
           },
 
           actor: {
@@ -692,7 +1397,7 @@ export default class CadenzaDB {
                 type: "varchar",
                 required: true,
                 constraints: {
-                  maxLength: 100,
+                  maxLength: STRUCTURAL_NAME_MAX_LENGTH,
                 },
               },
               description: {
@@ -788,17 +1493,6 @@ export default class CadenzaDB {
             },
             primaryKey: ["name", "service_name", "version"],
             indexes: [["service_name", "is_meta"], ["generated_by"]],
-            customSignals: {
-              triggers: {
-                insert: [
-                  buildInsertTriggerWithOnConflictDoNothing(
-                    "global.meta.graph_metadata.actor_created",
-                    ["name", "service_name", "version"],
-                  ),
-                ],
-                update: ["global.meta.graph_metadata.actor_updated"],
-              },
-            },
           },
 
           actor_task_map: {
@@ -869,22 +1563,6 @@ export default class CadenzaDB {
               },
             ],
             indexes: [["service_name", "mode", "is_meta"]],
-            customSignals: {
-              triggers: {
-                insert: [
-                  buildInsertTriggerWithOnConflictDoNothing(
-                    "global.meta.graph_metadata.actor_task_associated",
-                    [
-                      "actor_name",
-                      "actor_version",
-                      "task_name",
-                      "task_version",
-                      "service_name",
-                    ],
-                  ),
-                ],
-              },
-            },
           },
 
           actor_session_state: {
@@ -954,12 +1632,6 @@ export default class CadenzaDB {
               ["updated"],
               ["expires_at"],
             ],
-            customSignals: {
-              triggers: {
-                insert: ["global.meta.graph_metadata.actor_session_state_created"],
-                update: ["global.meta.graph_metadata.actor_session_state_updated"],
-              },
-            },
           },
 
           directional_task_graph_map: {
@@ -1034,24 +1706,6 @@ export default class CadenzaDB {
                 referenceFields: ["name", "version", "service_name"],
               },
             ],
-            customSignals: {
-              triggers: {
-                insert: [
-                  buildInsertTriggerWithOnConflictDoNothing(
-                    "global.meta.graph_metadata.task_relationship_created",
-                    [
-                      "task_name",
-                      "predecessor_task_name",
-                      "task_version",
-                      "predecessor_task_version",
-                      "service_name",
-                      "predecessor_service_name",
-                    ],
-                  ),
-                ],
-                update: ["global.meta.graph_metadata.relationship_executed"],
-              },
-            },
           },
 
           routine: {
@@ -1060,7 +1714,7 @@ export default class CadenzaDB {
                 type: "varchar",
                 required: true,
                 constraints: {
-                  maxLength: 100,
+                  maxLength: STRUCTURAL_NAME_MAX_LENGTH,
                 },
               },
               description: {
@@ -1092,21 +1746,6 @@ export default class CadenzaDB {
             },
             indexes: [["is_meta"]],
             primaryKey: ["name", "service_name", "version"],
-            customSignals: {
-              triggers: {
-                insert: [
-                  buildInsertTriggerWithOnConflictDoNothing(
-                    "global.meta.graph_metadata.routine_created",
-                    ["name", "service_name", "version"],
-                  ),
-                  buildInsertTriggerWithOnConflictDoNothing(
-                    "global.meta.sync_controller.routine_added",
-                    ["name", "service_name", "version"],
-                  ),
-                ],
-                update: ["global.meta.graph_metadata.routine_updated"],
-              },
-            },
           },
 
           task_to_routine_map: {
@@ -1157,32 +1796,6 @@ export default class CadenzaDB {
                 referenceFields: ["name", "version", "service_name"],
               },
             ],
-            customSignals: {
-              triggers: {
-                insert: [
-                  buildInsertTriggerWithOnConflictDoNothing(
-                    "global.meta.graph_metadata.task_added_to_routine",
-                    [
-                      "task_name",
-                      "routine_name",
-                      "task_version",
-                      "routine_version",
-                      "service_name",
-                    ],
-                  ),
-                  buildInsertTriggerWithOnConflictDoNothing(
-                    "global.meta.sync_controller.task_to_routine_map",
-                    [
-                      "task_name",
-                      "routine_name",
-                      "task_version",
-                      "routine_version",
-                      "service_name",
-                    ],
-                  ),
-                ],
-              },
-            },
           },
 
           field_type: {
@@ -2086,6 +2699,17 @@ export default class CadenzaDB {
                 type: "boolean",
                 default: false,
               },
+              delivery_mode: {
+                type: "varchar",
+                default: "single",
+                constraints: {
+                  maxLength: 25,
+                },
+              },
+              broadcast_filter: {
+                type: "jsonb",
+                default: null,
+              },
               created: {
                 type: "timestamp",
                 default: "now()",
@@ -2096,16 +2720,6 @@ export default class CadenzaDB {
               },
             },
             indexes: [["is_meta", "domain", "action", "is_global"]],
-            customSignals: {
-              triggers: {
-                insert: [
-                  buildInsertTriggerWithOnConflictDoNothing(
-                    "global.meta.signal_controller.signal_added",
-                    ["name"],
-                  ),
-                ],
-              },
-            },
           },
 
           signal_to_task_map: {
@@ -2154,25 +2768,6 @@ export default class CadenzaDB {
                 referenceFields: ["name", "version", "service_name"],
               },
             ],
-            customSignals: {
-              triggers: {
-                insert: [
-                  buildInsertTriggerWithOnConflictDoNothing(
-                    "global.meta.graph_metadata.task_signal_observed",
-                    [
-                      "signal_name",
-                      "task_name",
-                      "task_version",
-                      "service_name",
-                    ],
-                  ),
-                ],
-                update: [
-                  // "meta.graph_metadata.task_unsubscribed_signal",
-                  // "*.meta.graph_metadata.task_unsubscribed_signal",
-                ],
-              },
-            },
           },
 
           signal_emission: {
@@ -2314,17 +2909,6 @@ export default class CadenzaDB {
               },
             },
             indexes: [["is_meta"]],
-            customSignals: {
-              triggers: {
-                insert: [
-                  buildInsertTriggerWithOnConflictDoNothing(
-                    "global.meta.graph_metadata.intent_created",
-                    ["name"],
-                  ),
-                ],
-                update: ["global.meta.graph_metadata.intent_updated"],
-              },
-            },
           },
 
           intent_to_task_map: {
@@ -2374,21 +2958,6 @@ export default class CadenzaDB {
                 referenceFields: ["name", "version", "service_name"],
               },
             ],
-            customSignals: {
-              triggers: {
-                insert: [
-                  buildInsertTriggerWithOnConflictDoNothing(
-                    "global.meta.graph_metadata.task_intent_associated",
-                    [
-                      "intent_name",
-                      "task_name",
-                      "task_version",
-                      "service_name",
-                    ],
-                  ),
-                ],
-              },
-            },
           },
 
           inquiry: {
@@ -2786,6 +3355,7 @@ export default class CadenzaDB {
 
     ExecutionPersistenceCoordinator.instance;
     registerAuthorityRuntimeStatusTasks();
+    startRuntimeDiagnosticsLoop();
     const ensureServiceManifestAuthorityTasks = () => {
       if (Cadenza.get("Report service manifest to authority")) {
         return true;
@@ -2847,9 +3417,7 @@ export default class CadenzaDB {
       const finalizeServiceManifestInsertTask = Cadenza.createMetaTask(
         "Finalize service manifest insert",
         (ctx, emit) => {
-          const snapshot = normalizeServiceManifestSnapshot(
-            ctx.__serviceManifestSnapshot,
-          );
+          const snapshot = resolveServiceManifestSnapshotFromContext(ctx);
           if (!snapshot) {
             return {};
           }
@@ -2860,6 +3428,19 @@ export default class CadenzaDB {
             revision: snapshot.revision,
             manifestHash: snapshot.manifestHash,
             publishedAt: snapshot.publishedAt,
+          });
+          emitManifestStructuralProjectionRequests(emit, {
+            serviceName: snapshot.serviceName,
+            serviceManifests: [
+              {
+                service_instance_id: snapshot.serviceInstanceId,
+                service_name: snapshot.serviceName,
+                revision: snapshot.revision,
+                manifest_hash: snapshot.manifestHash,
+                published_at: snapshot.publishedAt,
+                manifest: snapshot,
+              },
+            ],
           });
 
           return {
@@ -2875,9 +3456,8 @@ export default class CadenzaDB {
         },
       );
 
-      reportServiceManifestTask
-        .then(localServiceManifestInsertTask)
-        .then(finalizeServiceManifestInsertTask);
+      reportServiceManifestTask.then(localServiceManifestInsertTask);
+      localServiceManifestInsertTask.then(finalizeServiceManifestInsertTask);
 
       return true;
     };
@@ -2886,13 +3466,24 @@ export default class CadenzaDB {
 
     Cadenza.createMetaTask(
       "Ensure authority service manifest flow is registered",
-      () => ensureServiceManifestAuthorityTasks(),
+      () => {
+        const ensured = ensureServiceManifestAuthorityTasks();
+
+        if (!ensured) {
+          scheduleLocalEnsureRetry(ensureServiceManifestAuthorityTasks, 25);
+        }
+
+        return ensured;
+      },
       "Registers the authority manifest-report responder once generated local manifest insert tasks are available.",
       {
-        register: false,
         isHidden: true,
       },
-    ).doOn("meta.service_registry.instance_inserted", "global.meta.sync_controller.synced");
+    ).doOn(
+      "meta.service_registry.instance_inserted",
+      "global.meta.sync_controller.synced",
+      "meta.task.created",
+    );
 
     for (const delayMs of AUTHORITY_SERVICE_MANIFEST_ENSURE_DELAYS_MS) {
       Cadenza.schedule(
@@ -2906,10 +3497,545 @@ export default class CadenzaDB {
         },
         delayMs,
       );
+      scheduleLocalEnsureRetry(ensureServiceManifestAuthorityTasks, delayMs);
+    }
+
+    const ensureAuthorityManifestStructuralProjectionTasks = () => {
+      if (Cadenza.get("Prepare manifest task projection insert")) {
+        return true;
+      }
+
+      const localTaskInsertTask = Cadenza.getLocalCadenzaDBInsertTask("task");
+      const localSignalRegistryInsertTask =
+        Cadenza.getLocalCadenzaDBInsertTask("signal_registry");
+      const localIntentRegistryInsertTask =
+        Cadenza.getLocalCadenzaDBInsertTask("intent_registry");
+      const localActorInsertTask = Cadenza.getLocalCadenzaDBInsertTask("actor");
+      const localRoutineInsertTask =
+        Cadenza.getLocalCadenzaDBInsertTask("routine");
+      const localTaskRelationshipInsertTask =
+        Cadenza.getLocalCadenzaDBInsertTask("directional_task_graph_map");
+      const localSignalToTaskMapInsertTask =
+        Cadenza.getLocalCadenzaDBInsertTask("signal_to_task_map");
+      const localIntentToTaskMapInsertTask =
+        Cadenza.getLocalCadenzaDBInsertTask("intent_to_task_map");
+      const localActorTaskMapInsertTask =
+        Cadenza.getLocalCadenzaDBInsertTask("actor_task_map");
+      const localTaskToRoutineMapInsertTask =
+        Cadenza.getLocalCadenzaDBInsertTask("task_to_routine_map");
+    if (
+        !localTaskInsertTask ||
+        !localSignalRegistryInsertTask ||
+        !localIntentRegistryInsertTask ||
+        !localActorInsertTask ||
+        !localRoutineInsertTask ||
+        !localTaskRelationshipInsertTask ||
+        !localSignalToTaskMapInsertTask ||
+        !localIntentToTaskMapInsertTask ||
+        !localActorTaskMapInsertTask ||
+        !localTaskToRoutineMapInsertTask
+      ) {
+        return false;
+      }
+
+      const prepareManifestTaskInsertTask = Cadenza.createMetaTask(
+        "Prepare manifest task projection insert",
+        (ctx) => {
+          const rows = normalizeRowArray(ctx?.__projectedTasks);
+          if (rows.length === 0) {
+            return false;
+          }
+
+          logLocalSyncDebug("prepared_manifest_task_projection_insert", {
+            rowCount: rows.length,
+          });
+
+          return {
+            ...ctx,
+            __manifestEntityKind: "task",
+            data: rows,
+            queryData: {
+              data: rows,
+              onConflict: {
+                target: ["name", "service_name", "version"],
+                action: {
+                  do: "update",
+                  set: {
+                    is_deputy: "excluded",
+                    is_meta: "excluded",
+                    description: "excluded",
+                    function_string: "excluded",
+                    tag_id_getter: "excluded",
+                    layer_index: "excluded",
+                    timeout: "excluded",
+                    is_unique: "excluded",
+                    is_sub_meta: "excluded",
+                    is_ephemeral: "excluded",
+                    is_signal: "excluded",
+                    is_throttled: "excluded",
+                    is_debounce: "excluded",
+                    is_hidden: "excluded",
+                    concurrency: "excluded",
+                    generated_by: "excluded",
+                    input_context_schema: "excluded",
+                    output_context_schema: "excluded",
+                    validate_input_context: "excluded",
+                    validate_output_context: "excluded",
+                    retry_count: "excluded",
+                    retry_delay: "excluded",
+                    retry_delay_max: "excluded",
+                    retry_delay_factor: "excluded",
+                    signals: "excluded",
+                    intents: "excluded",
+                    flags: "excluded",
+                    deleted: "false",
+                  },
+                },
+              },
+            },
+          };
+        },
+        "Builds durable task upserts from manifest-derived task rows.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn(META_MANIFEST_ENTITY_PROJECTION_REQUESTED);
+
+      const prepareManifestSignalInsertTask = Cadenza.createMetaTask(
+        "Prepare manifest signal projection insert",
+        (ctx) => {
+          const rows = normalizeRowArray(ctx?.__projectedSignals);
+          if (rows.length === 0) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            __manifestEntityKind: "signal",
+            data: rows,
+            queryData: {
+              data: rows,
+              onConflict: {
+                target: ["name"],
+                action: {
+                  do: "update",
+                  set: {
+                    is_global: "excluded",
+                    domain: "excluded",
+                    action: "excluded",
+                    is_meta: "excluded",
+                    delivery_mode: "excluded",
+                    broadcast_filter: "excluded",
+                    deleted: "false",
+                  },
+                },
+              },
+            },
+          };
+        },
+        "Builds durable signal_registry upserts from manifest-derived signal rows.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn(META_MANIFEST_ENTITY_PROJECTION_REQUESTED);
+
+      const prepareManifestIntentInsertTask = Cadenza.createMetaTask(
+        "Prepare manifest intent projection insert",
+        (ctx) => {
+          const rows = normalizeRowArray(ctx?.__projectedIntents);
+          if (rows.length === 0) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            __manifestEntityKind: "intent",
+            data: rows,
+            queryData: {
+              data: rows,
+              onConflict: {
+                target: ["name"],
+                action: {
+                  do: "update",
+                  set: {
+                    description: "excluded",
+                    input: "excluded",
+                    output: "excluded",
+                    is_meta: "excluded",
+                    deleted: "false",
+                  },
+                },
+              },
+            },
+          };
+        },
+        "Builds durable intent_registry upserts from manifest-derived intent rows.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn(META_MANIFEST_ENTITY_PROJECTION_REQUESTED);
+
+      const prepareManifestActorInsertTask = Cadenza.createMetaTask(
+        "Prepare manifest actor projection insert",
+        (ctx) => {
+          const rows = normalizeRowArray(ctx?.__projectedActors);
+          if (rows.length === 0) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            __manifestEntityKind: "actor",
+            data: rows,
+            queryData: {
+              data: rows,
+              onConflict: {
+                target: ["name", "service_name", "version"],
+                action: {
+                  do: "update",
+                  set: {
+                    description: "excluded",
+                    default_key: "excluded",
+                    load_policy: "excluded",
+                    write_contract: "excluded",
+                    runtime_read_guard: "excluded",
+                    consistency_profile: "excluded",
+                    key_definition: "excluded",
+                    state_definition: "excluded",
+                    retry_policy: "excluded",
+                    idempotency_policy: "excluded",
+                    session_policy: "excluded",
+                    is_meta: "excluded",
+                    deleted: "false",
+                  },
+                },
+              },
+            },
+          };
+        },
+        "Builds durable actor upserts from manifest-derived actor rows.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn(META_MANIFEST_ENTITY_PROJECTION_REQUESTED);
+
+      const prepareManifestRoutineInsertTask = Cadenza.createMetaTask(
+        "Prepare manifest routine projection insert",
+        (ctx) => {
+          const rows = normalizeRowArray(ctx?.__projectedRoutines);
+          if (rows.length === 0) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            __manifestEntityKind: "routine",
+            data: rows,
+            queryData: {
+              data: rows,
+              onConflict: {
+                target: ["name", "service_name", "version"],
+                action: {
+                  do: "update",
+                  set: {
+                    description: "excluded",
+                    is_meta: "excluded",
+                    deleted: "false",
+                  },
+                },
+              },
+            },
+          };
+        },
+        "Builds durable routine upserts from manifest-derived routine rows.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn(META_MANIFEST_ENTITY_PROJECTION_REQUESTED);
+
+      const prepareManifestTaskRelationshipInsertTask = Cadenza.createMetaTask(
+        "Prepare manifest task relationship projection insert",
+        (ctx) => {
+          const rows = normalizeRowArray(ctx?.__projectedDirectionalTaskMaps);
+          if (rows.length === 0) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            data: rows,
+            queryData: {
+              data: rows,
+              onConflict: {
+                target: [
+                  "task_name",
+                  "predecessor_task_name",
+                  "task_version",
+                  "predecessor_task_version",
+                  "service_name",
+                  "predecessor_service_name",
+                ],
+                action: {
+                  do: "nothing",
+                },
+              },
+            },
+          };
+        },
+        "Builds durable directional_task_graph_map inserts from manifest-derived structural rows.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn(META_MANIFEST_ASSOCIATION_PROJECTION_REQUESTED);
+
+      const prepareManifestSignalTaskMapInsertTask = Cadenza.createMetaTask(
+        "Prepare manifest signal task map projection insert",
+        (ctx) => {
+          const rows = normalizeRowArray(ctx?.__projectedSignalToTaskMaps);
+          if (rows.length === 0) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            data: rows,
+            queryData: {
+              data: rows,
+              onConflict: {
+                target: ["signal_name", "task_name", "task_version", "service_name"],
+                action: {
+                  do: "nothing",
+                },
+              },
+            },
+          };
+        },
+        "Builds durable signal_to_task_map inserts from manifest-derived structural rows.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn(META_MANIFEST_ASSOCIATION_PROJECTION_REQUESTED);
+
+      const prepareManifestIntentTaskMapInsertTask = Cadenza.createMetaTask(
+        "Prepare manifest intent task map projection insert",
+        (ctx) => {
+          const rows = normalizeRowArray(ctx?.__projectedIntentToTaskMaps);
+          if (rows.length === 0) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            data: rows,
+            queryData: {
+              data: rows,
+              onConflict: {
+                target: ["intent_name", "task_name", "task_version", "service_name"],
+                action: {
+                  do: "nothing",
+                },
+              },
+            },
+          };
+        },
+        "Builds durable intent_to_task_map inserts from manifest-derived structural rows.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn(META_MANIFEST_ASSOCIATION_PROJECTION_REQUESTED);
+
+      const prepareManifestActorTaskMapInsertTask = Cadenza.createMetaTask(
+        "Prepare manifest actor task map projection insert",
+        (ctx) => {
+          const rows = normalizeRowArray(ctx?.__projectedActorTaskMaps);
+          if (rows.length === 0) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            data: rows,
+            queryData: {
+              data: rows,
+              onConflict: {
+                target: [
+                  "actor_name",
+                  "actor_version",
+                  "task_name",
+                  "task_version",
+                  "service_name",
+                ],
+                action: {
+                  do: "nothing",
+                },
+              },
+            },
+          };
+        },
+        "Builds durable actor_task_map inserts from manifest-derived structural rows.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn(META_MANIFEST_ASSOCIATION_PROJECTION_REQUESTED);
+
+      const prepareManifestTaskToRoutineMapInsertTask = Cadenza.createMetaTask(
+        "Prepare manifest task-to-routine projection insert",
+        (ctx) => {
+          const rows = normalizeRowArray(ctx?.__projectedTaskToRoutineMaps);
+          if (rows.length === 0) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            data: rows,
+            queryData: {
+              data: rows,
+              onConflict: {
+                target: [
+                  "task_name",
+                  "routine_name",
+                  "task_version",
+                  "routine_version",
+                  "service_name",
+                ],
+                action: {
+                  do: "nothing",
+                },
+              },
+            },
+          };
+        },
+        "Builds durable task_to_routine_map inserts from manifest-derived structural rows.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn(META_MANIFEST_ASSOCIATION_PROJECTION_REQUESTED);
+
+      const collectManifestEntityPersistenceCompletionTask =
+        Cadenza.createMetaTask(
+          "Collect manifest entity persistence completion",
+          (ctx) => {
+            const flushed = markManifestAssociationProjectionEntityPersisted(
+              readRecord(ctx),
+            );
+            logLocalSyncDebug("manifest_entity_persistence_completion", {
+              entityKind: readString(ctx?.__manifestEntityKind) || null,
+              projectionKey: readString(ctx?.__manifestProjectionKey) || null,
+              flushedAssociationProjections: flushed,
+            });
+            return flushed > 0
+              ? {
+                  flushedAssociationProjections: flushed,
+                }
+              : false;
+          },
+          "Flushes queued manifest association inserts only after all projected primitive entity inserts for the same manifest batch have completed.",
+          {
+            register: false,
+            isHidden: true,
+          },
+        );
+
+      prepareManifestTaskInsertTask.then(localTaskInsertTask);
+      prepareManifestSignalInsertTask.then(localSignalRegistryInsertTask);
+      prepareManifestIntentInsertTask.then(localIntentRegistryInsertTask);
+      prepareManifestActorInsertTask.then(localActorInsertTask);
+      prepareManifestRoutineInsertTask.then(localRoutineInsertTask);
+      localTaskInsertTask.then(collectManifestEntityPersistenceCompletionTask);
+      localSignalRegistryInsertTask.then(
+        collectManifestEntityPersistenceCompletionTask,
+      );
+      localIntentRegistryInsertTask.then(
+        collectManifestEntityPersistenceCompletionTask,
+      );
+      localActorInsertTask.then(collectManifestEntityPersistenceCompletionTask);
+      localRoutineInsertTask.then(collectManifestEntityPersistenceCompletionTask);
+      prepareManifestTaskRelationshipInsertTask.then(
+        localTaskRelationshipInsertTask,
+      );
+      prepareManifestSignalTaskMapInsertTask.then(localSignalToTaskMapInsertTask);
+      prepareManifestIntentTaskMapInsertTask.then(localIntentToTaskMapInsertTask);
+      prepareManifestActorTaskMapInsertTask.then(localActorTaskMapInsertTask);
+      prepareManifestTaskToRoutineMapInsertTask.then(
+        localTaskToRoutineMapInsertTask,
+      );
+
+      void collectManifestEntityPersistenceCompletionTask;
+
+      logLocalSyncDebug("authority_manifest_structural_projection_registered", {
+        hasLocalTaskInsertTask: !!localTaskInsertTask,
+        hasLocalSignalRegistryInsertTask: !!localSignalRegistryInsertTask,
+        hasLocalIntentRegistryInsertTask: !!localIntentRegistryInsertTask,
+        hasLocalActorInsertTask: !!localActorInsertTask,
+        hasLocalRoutineInsertTask: !!localRoutineInsertTask,
+        hasLocalTaskRelationshipInsertTask: !!localTaskRelationshipInsertTask,
+        hasLocalSignalToTaskMapInsertTask: !!localSignalToTaskMapInsertTask,
+        hasLocalIntentToTaskMapInsertTask: !!localIntentToTaskMapInsertTask,
+        hasLocalActorTaskMapInsertTask: !!localActorTaskMapInsertTask,
+        hasLocalTaskToRoutineMapInsertTask: !!localTaskToRoutineMapInsertTask,
+      });
+
+      return true;
+    };
+
+    ensureAuthorityManifestStructuralProjectionTasks();
+
+    Cadenza.createMetaTask(
+      "Ensure authority manifest structural projection flow is registered",
+      () => {
+        const ensured = ensureAuthorityManifestStructuralProjectionTasks();
+
+        if (!ensured) {
+          scheduleLocalEnsureRetry(
+            ensureAuthorityManifestStructuralProjectionTasks,
+            25,
+          );
+        }
+
+        return ensured;
+      },
+      "Registers manifest-derived structural projection once local manifest query and insert tasks are available.",
+      {
+        isHidden: true,
+      },
+    ).doOn(
+      "meta.service_registry.instance_inserted",
+      "global.meta.sync_controller.synced",
+      "meta.task.created",
+    );
+
+    for (const delayMs of AUTHORITY_SERVICE_MANIFEST_ENSURE_DELAYS_MS) {
+      Cadenza.schedule(
+        "meta.service_registry.instance_inserted",
+        {
+          serviceInstance: {
+            uuid: Cadenza.serviceRegistry.serviceInstanceId,
+            serviceName: Cadenza.serviceRegistry.serviceName,
+          },
+          __reason: "authority_manifest_structural_projection_startup_ensure",
+        },
+        delayMs,
+      );
+      scheduleLocalEnsureRetry(
+        ensureAuthorityManifestStructuralProjectionTasks,
+        delayMs,
+      );
     }
 
     const ensureAuthorityRegistryProjectionTasks = () => {
       if (Cadenza.get("Project persisted authority registry state")) {
+        logLocalSyncDebug("authority_registry_projection_already_registered", {});
         return true;
       }
 
@@ -2923,15 +4049,37 @@ export default class CadenzaDB {
           queryServiceManifestTask,
         } = resolveLocalServiceRegistrySyncTasks());
       } catch {
+        logLocalSyncDebug("authority_registry_projection_tasks_unavailable", {
+          hasQueryServiceInstanceTask: !!resolveLocalSyncQueryTask("service_instance"),
+          hasQueryServiceInstanceTransportTask: !!resolveLocalSyncQueryTask(
+            "service_instance_transport",
+          ),
+          hasQueryServiceManifestTask: !!resolveLocalSyncQueryTask("service_manifest"),
+        });
         return false;
       }
 
       const normalizeProjectedServiceInstancesTask = Cadenza.createMetaTask(
         "Normalize projected authority service instances",
-        (ctx) => ({
-          ...ctx,
-          serviceInstances: normalizeRowArray(ctx.rows ?? ctx.serviceInstances),
-        }),
+        (ctx) => {
+          const projectionId = resolveAuthorityRegistryProjectionId(ctx, {
+            consumePending: false,
+          });
+          const serviceInstances = normalizeRowArray(
+            ctx.rows ?? ctx.serviceInstances,
+          );
+          logLocalSyncDebug("normalized_authority_service_instances", {
+            rowCount: serviceInstances.length,
+            projectionId,
+          });
+          return {
+            ...ctx,
+            ...(projectionId
+              ? { __projectionId: projectionId, projectionId }
+              : {}),
+            serviceInstances,
+          };
+        },
         "Normalizes persisted service-instance query rows for authority runtime projection.",
         {
           register: false,
@@ -2941,12 +4089,25 @@ export default class CadenzaDB {
 
       const normalizeProjectedServiceInstanceTransportsTask = Cadenza.createMetaTask(
         "Normalize projected authority service instance transports",
-        (ctx) => ({
-          ...ctx,
-          serviceInstanceTransports: normalizeRowArray(
+        (ctx) => {
+          const projectionId = resolveAuthorityRegistryProjectionId(ctx, {
+            consumePending: false,
+          });
+          const serviceInstanceTransports = normalizeRowArray(
             ctx.rows ?? ctx.serviceInstanceTransports,
-          ),
-        }),
+          );
+          logLocalSyncDebug("normalized_authority_service_instance_transports", {
+            rowCount: serviceInstanceTransports.length,
+            projectionId,
+          });
+          return {
+            ...ctx,
+            ...(projectionId
+              ? { __projectionId: projectionId, projectionId }
+              : {}),
+            serviceInstanceTransports,
+          };
+        },
         "Normalizes persisted service-instance transport query rows for authority runtime projection.",
         {
           register: false,
@@ -2956,10 +4117,25 @@ export default class CadenzaDB {
 
       const normalizeProjectedServiceManifestsTask = Cadenza.createMetaTask(
         "Normalize projected authority service manifests",
-        (ctx) => ({
-          ...ctx,
-          serviceManifests: normalizeRowArray(ctx.rows ?? ctx.serviceManifests),
-        }),
+        (ctx) => {
+          const projectionId = resolveAuthorityRegistryProjectionId(ctx, {
+            consumePending: false,
+          });
+          const serviceManifests = normalizeRowArray(
+            ctx.rows ?? ctx.serviceManifests,
+          );
+          logLocalSyncDebug("normalized_authority_service_manifests", {
+            rowCount: serviceManifests.length,
+            projectionId,
+          });
+          return {
+            ...ctx,
+            ...(projectionId
+              ? { __projectionId: projectionId, projectionId }
+              : {}),
+            serviceManifests,
+          };
+        },
         "Normalizes persisted service-manifest query rows for authority runtime projection.",
         {
           register: false,
@@ -2974,14 +4150,21 @@ export default class CadenzaDB {
             readString(ctx?.__reason) ||
             readString(ctx?.signal) ||
             "authority_registry_projection";
-          Cadenza.debounce(
-            META_AUTHORITY_REGISTRY_PROJECTION_EXECUTE,
-            { __reason: reason },
-            50,
-          );
+          const projectionId = `${Date.now()}-${Math.random()
+            .toString(36)
+            .slice(2, 10)}`;
+          registerPendingAuthorityRegistryProjectionId(projectionId);
+          logLocalSyncDebug("authority_registry_projection_requested", {
+            reason,
+            projectionId,
+          });
           return {
+            ...ctx,
             requested: true,
             reason,
+            projectionId,
+            __reason: reason,
+            __projectionId: projectionId,
           };
         },
         "Requests a replay of persisted authority registry rows into runtime state.",
@@ -2996,23 +4179,129 @@ export default class CadenzaDB {
 
       const executeAuthorityRegistryProjectionTask = Cadenza.createMetaTask(
         "Execute authority registry projection replay",
-        (ctx) => ({
-          ...ctx,
-        }),
+        (ctx) => {
+          const projectionId = resolveAuthorityRegistryProjectionId(ctx);
+          const reason =
+            readString(ctx?.__reason ?? ctx?.reason) || null;
+          logLocalSyncDebug("authority_registry_projection_execute", {
+            reason,
+            projectionId,
+          });
+          return {
+            ...ctx,
+            ...(projectionId
+              ? { __projectionId: projectionId, projectionId }
+              : {}),
+            ...(reason ? { __reason: reason, reason } : {}),
+          };
+        },
         "Executes the persisted authority registry replay fan-out/fan-in graph.",
         {
           register: false,
           isHidden: true,
           isUnique: true,
         },
-      ).doOn(META_AUTHORITY_REGISTRY_PROJECTION_EXECUTE);
+      );
+
+      const collectAuthorityRegistryProjectionTask = Cadenza.createMetaTask(
+        "Collect authority registry projection replay",
+        (ctx) => {
+          const projectionId =
+            resolveAuthorityRegistryProjectionId(ctx, {
+              consumePending: false,
+            }) || "authority-registry-projection";
+
+          const now = Date.now();
+          pruneAuthorityRegistryProjectionAccumulator(now);
+
+          const entry = authorityRegistryProjectionAccumulator.get(projectionId) ?? {
+            updatedAt: now,
+          };
+
+          if (Array.isArray(ctx?.serviceInstances)) {
+            entry.serviceInstances = normalizeRowArray(ctx.serviceInstances);
+          }
+          if (Array.isArray(ctx?.serviceInstanceTransports)) {
+            entry.serviceInstanceTransports = normalizeRowArray(
+              ctx.serviceInstanceTransports,
+            );
+          }
+          if (Array.isArray(ctx?.serviceManifests)) {
+            entry.serviceManifests = normalizeRowArray(ctx.serviceManifests);
+          }
+
+          entry.updatedAt = now;
+          authorityRegistryProjectionAccumulator.set(projectionId, entry);
+
+          if (
+            !entry.serviceInstances ||
+            !entry.serviceInstanceTransports ||
+            !entry.serviceManifests
+          ) {
+            logLocalSyncDebug("authority_registry_projection_waiting_for_branches", {
+              projectionId,
+              hasServiceInstances: !!entry.serviceInstances,
+              hasServiceInstanceTransports: !!entry.serviceInstanceTransports,
+              hasServiceManifests: !!entry.serviceManifests,
+            });
+            return false;
+          }
+
+          authorityRegistryProjectionAccumulator.delete(projectionId);
+          authorityRegistryProjectionPayloads.set(projectionId, {
+            updatedAt: now,
+            serviceInstances: entry.serviceInstances,
+            serviceInstanceTransports: entry.serviceInstanceTransports,
+            serviceManifests: entry.serviceManifests,
+          });
+          if (activeAuthorityRegistryProjectionId === projectionId) {
+            activeAuthorityRegistryProjectionId = null;
+          }
+          logLocalSyncDebug("authority_registry_projection_collected", {
+            projectionId,
+            serviceInstances: entry.serviceInstances.length,
+            serviceInstanceTransports: entry.serviceInstanceTransports.length,
+            serviceManifests: entry.serviceManifests.length,
+          });
+
+          return {
+            ...ctx,
+            __projectionId: projectionId,
+            serviceInstances: entry.serviceInstances,
+            serviceInstanceTransports: entry.serviceInstanceTransports,
+            serviceManifests: entry.serviceManifests,
+          };
+        },
+        "Collects normalized authority registry replay branches before projecting them into runtime state.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
 
       const projectAuthorityRegistryStateTask = Cadenza.createMetaTask(
         "Project persisted authority registry state",
         (ctx, emit) => {
-          const serviceInstanceRows = normalizeRowArray(ctx.serviceInstances);
-          const transportRows = normalizeRowArray(ctx.serviceInstanceTransports);
-          const manifestRows = normalizeRowArray(ctx.serviceManifests);
+          const now = Date.now();
+          pruneAuthorityRegistryProjectionPayloads(now);
+          const projectionId =
+            resolveAuthorityRegistryProjectionId(ctx, {
+              consumePending: false,
+            }) || "authority-registry-projection";
+          const cachedPayload = authorityRegistryProjectionPayloads.get(projectionId);
+          const serviceInstanceRows =
+            normalizeRowArray(ctx.serviceInstances).length > 0
+              ? normalizeRowArray(ctx.serviceInstances)
+              : normalizeRowArray(cachedPayload?.serviceInstances);
+          const transportRows =
+            normalizeRowArray(ctx.serviceInstanceTransports).length > 0
+              ? normalizeRowArray(ctx.serviceInstanceTransports)
+              : normalizeRowArray(cachedPayload?.serviceInstanceTransports);
+          const manifestRows =
+            normalizeRowArray(ctx.serviceManifests).length > 0
+              ? normalizeRowArray(ctx.serviceManifests)
+              : normalizeRowArray(cachedPayload?.serviceManifests);
+          authorityRegistryProjectionPayloads.delete(projectionId);
           const transportsByInstance = new Map<string, Array<Record<string, unknown>>>();
 
           for (const row of transportRows) {
@@ -3058,6 +4347,9 @@ export default class CadenzaDB {
               publishedAt: snapshot.publishedAt,
             });
           }
+          emitManifestStructuralProjectionRequests(emit, {
+            serviceManifests: manifestRows,
+          });
 
           logLocalSyncDebug("projected_authority_registry_state", {
             serviceInstances: serviceInstanceRows.length,
@@ -3080,16 +4372,28 @@ export default class CadenzaDB {
       );
 
       executeAuthorityRegistryProjectionTask.then(
-        queryServiceInstanceTask.then(normalizeProjectedServiceInstancesTask).then(
-          projectAuthorityRegistryStateTask,
-        ),
-        queryServiceInstanceTransportTask.then(
-          normalizeProjectedServiceInstanceTransportsTask,
-        ).then(projectAuthorityRegistryStateTask),
-        queryServiceManifestTask.then(normalizeProjectedServiceManifestsTask).then(
-          projectAuthorityRegistryStateTask,
-        ),
+        queryServiceInstanceTask,
+        queryServiceInstanceTransportTask,
+        queryServiceManifestTask,
       );
+      queryServiceInstanceTask.then(normalizeProjectedServiceInstancesTask);
+      queryServiceInstanceTransportTask.then(
+        normalizeProjectedServiceInstanceTransportsTask,
+      );
+      queryServiceManifestTask.then(normalizeProjectedServiceManifestsTask);
+      requestAuthorityRegistryProjectionTask.then(
+        executeAuthorityRegistryProjectionTask,
+      );
+      normalizeProjectedServiceInstancesTask.then(
+        collectAuthorityRegistryProjectionTask,
+      );
+      normalizeProjectedServiceInstanceTransportsTask.then(
+        collectAuthorityRegistryProjectionTask,
+      );
+      normalizeProjectedServiceManifestsTask.then(
+        collectAuthorityRegistryProjectionTask,
+      );
+      collectAuthorityRegistryProjectionTask.then(projectAuthorityRegistryStateTask);
 
       for (const delayMs of AUTHORITY_REGISTRY_PROJECTION_STARTUP_DELAYS_MS) {
         Cadenza.schedule(
@@ -3101,6 +4405,19 @@ export default class CadenzaDB {
         );
       }
 
+      Cadenza.debounce(
+        META_AUTHORITY_REGISTRY_PROJECTION_REQUESTED,
+        {
+          __reason: "authority_registry_projection_flow_registered",
+        },
+        25,
+      );
+      logLocalSyncDebug("authority_registry_projection_registered", {
+        hasQueryServiceInstanceTask: !!queryServiceInstanceTask,
+        hasQueryServiceInstanceTransportTask: !!queryServiceInstanceTransportTask,
+        hasQueryServiceManifestTask: !!queryServiceManifestTask,
+      });
+
       return requestAuthorityRegistryProjectionTask;
     };
 
@@ -3108,13 +4425,28 @@ export default class CadenzaDB {
 
     Cadenza.createMetaTask(
       "Ensure authority registry projection flow is registered",
-      () => ensureAuthorityRegistryProjectionTasks(),
+      () => {
+        const ensured = ensureAuthorityRegistryProjectionTasks();
+
+        if (!ensured) {
+          scheduleLocalEnsureRetry(
+            ensureAuthorityRegistryProjectionTasks,
+            25,
+          );
+        }
+
+        return ensured;
+      },
       "Registers the authority persisted-registry projection flow once generated local query tasks are available.",
       {
         register: false,
         isHidden: true,
       },
     ).doOn("meta.service_registry.instance_inserted", "global.meta.sync_controller.synced");
+
+    for (const delayMs of AUTHORITY_REGISTRY_PROJECTION_STARTUP_DELAYS_MS) {
+      scheduleLocalEnsureRetry(ensureAuthorityRegistryProjectionTasks, delayMs);
+    }
 
     const localIntentRegistryInsertTask =
       Cadenza.getLocalCadenzaDBInsertTask("intent_registry");
@@ -3335,7 +4667,7 @@ export default class CadenzaDB {
       Cadenza.createMetaTask(
         "Log local service instance insert for canonicalization debug",
         (ctx: any) => {
-          console.log("[CADENZA_DB_CANONICALIZATION] local_instance_insert", {
+          logCanonicalizationTrace("local_instance_insert", {
             uuid: ctx?.data?.uuid ?? ctx?.uuid ?? null,
             serviceName:
               ctx?.data?.service_name ?? ctx?.service_name ?? null,
@@ -3353,7 +4685,7 @@ export default class CadenzaDB {
       Cadenza.createMetaTask(
         "Log local service instance transport insert for canonicalization debug",
         (ctx: any) => {
-          console.log("[CADENZA_DB_CANONICALIZATION] local_transport_insert", {
+          logCanonicalizationTrace("local_transport_insert", {
             uuid: ctx?.data?.uuid ?? ctx?.uuid ?? null,
             serviceInstanceId:
               ctx?.data?.service_instance_id ?? ctx?.service_instance_id ?? null,
@@ -3969,7 +5301,27 @@ export default class CadenzaDB {
         Cadenza.createUniqueMetaTask(
           "Request service instance origin canonicalization sweep",
           (ctx: any) => {
-            console.log("[CADENZA_DB_CANONICALIZATION] request", {
+            const transportDescriptor =
+              resolveServiceInstanceTransportTriggerDescriptor(ctx);
+            const instanceId = readString(
+              ctx?.data?.uuid ??
+                ctx?.queryData?.filter?.uuid ??
+                ctx?.uuid ??
+                ctx?.__serviceInstanceId,
+            );
+            const instanceServiceName = readString(
+              ctx?.data?.service_name ?? ctx?.service_name,
+            );
+
+            if (
+              ctx?.__reason !== "cadenza_db_startup" &&
+              !transportDescriptor &&
+              (!isPersistedUuid(instanceId) || !instanceServiceName)
+            ) {
+              return false;
+            }
+
+            logCanonicalizationTrace("request", {
               reason: ctx?.__reason ?? null,
               attempt: ctx?.__attempt ?? null,
               serviceName: ctx?.data?.service_name ?? ctx?.service_name ?? null,
@@ -4016,7 +5368,7 @@ export default class CadenzaDB {
         Cadenza.createUniqueMetaTask(
           "Execute service instance origin canonicalization sweep",
           (ctx: any) => {
-            console.log("[CADENZA_DB_CANONICALIZATION] execute", {
+            logCanonicalizationTrace("execute", {
               reason: ctx?.__reason ?? null,
               attempt: ctx?.__attempt ?? null,
               serviceName: ctx?.data?.service_name ?? ctx?.service_name ?? null,
@@ -4133,7 +5485,7 @@ export default class CadenzaDB {
             serviceInstanceTransports,
           });
 
-          console.log("[CADENZA_DB_CANONICALIZATION] plans", {
+          logCanonicalizationTrace("plans", {
             serviceInstanceCount: serviceInstances.length,
             serviceTransportCount: serviceInstanceTransports.length,
             planCount: plans.length,
@@ -4215,7 +5567,7 @@ export default class CadenzaDB {
               ? ctx.__originCanonicalizationPlans
               : [];
 
-            console.log("[CADENZA_DB_CANONICALIZATION] split_instances", {
+            logCanonicalizationTrace("split_instances", {
               planCount: plans.length,
             });
 
@@ -4267,7 +5619,7 @@ export default class CadenzaDB {
               ? ctx.__originCanonicalizationPlans
               : [];
 
-            console.log("[CADENZA_DB_CANONICALIZATION] split_transports", {
+            logCanonicalizationTrace("split_transports", {
               planCount: plans.length,
             });
 

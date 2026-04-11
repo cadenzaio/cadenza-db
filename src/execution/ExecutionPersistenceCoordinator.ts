@@ -25,8 +25,21 @@ type ExecutionPersistenceCoordinatorRuntimeState = {
   lastTouchedAt: string | null;
 };
 
-const COORDINATOR_ACTOR_IDLE_TTL_MS = 5 * 60 * 1000;
+type ExecutionPersistenceCoordinatorStats = {
+  actorKeyCount: number;
+  totalPendingCount: number;
+  totalPersistedCount: number;
+  maxPendingPerKey: number;
+  maxPersistedPerKey: number;
+};
+
+const COORDINATOR_ACTOR_IDLE_TTL_MS = 10 * 1000;
+const COORDINATOR_ACTOR_ABSOLUTE_TTL_MS = 30 * 1000;
 const CADENZA_DB_POSTGRES_ACTOR_TOKEN = "cadenza-db-postgres-actor";
+const COORDINATOR_STATS_LOG_INTERVAL = 25;
+const COORDINATOR_STATS_LOG_ACTOR_KEY_THRESHOLD = 25;
+const COORDINATOR_STATS_LOG_PENDING_THRESHOLD = 50;
+const COORDINATOR_STATS_LOG_PERSISTED_THRESHOLD = 250;
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
@@ -36,6 +49,87 @@ function readRecord(value: unknown): Record<string, any> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? ({ ...(value as Record<string, any>) } as Record<string, any>)
     : null;
+}
+
+function splitContextAndMetaContext(
+  contextValue: unknown,
+  metaContextValue: unknown,
+): {
+  context: Record<string, any> | null;
+  metaContext: Record<string, any> | null;
+} {
+  const context = readRecord(contextValue);
+  const metaContext = readRecord(metaContextValue);
+
+  if (!context) {
+    return {
+      context: null,
+      metaContext,
+    };
+  }
+
+  const nextContext: Record<string, any> = {};
+  const nextMetaContext: Record<string, any> = metaContext ? { ...metaContext } : {};
+
+  for (const [key, value] of Object.entries(context)) {
+    if (key.startsWith("__")) {
+      if (nextMetaContext[key] === undefined) {
+        nextMetaContext[key] = value;
+      }
+      continue;
+    }
+
+    nextContext[key] = value;
+  }
+
+  return {
+    context: nextContext,
+    metaContext:
+      Object.keys(nextMetaContext).length > 0 ? nextMetaContext : null,
+  };
+}
+
+function normalizeExecutionPayloadContexts(
+  data: Record<string, any>,
+): Record<string, any> {
+  const normalizedData = { ...data };
+  const contextPairs: Array<{
+    contextKey: "context" | "result_context";
+    metaContextKey: "meta_context" | "meta_result_context";
+    legacyMetaKey: "metaContext" | "metaResultContext";
+  }> = [
+    {
+      contextKey: "context",
+      metaContextKey: "meta_context",
+      legacyMetaKey: "metaContext",
+    },
+    {
+      contextKey: "result_context",
+      metaContextKey: "meta_result_context",
+      legacyMetaKey: "metaResultContext",
+    },
+  ];
+
+  for (const { contextKey, metaContextKey, legacyMetaKey } of contextPairs) {
+    const { context, metaContext } = splitContextAndMetaContext(
+      normalizedData[contextKey],
+      normalizedData[metaContextKey] ?? normalizedData[legacyMetaKey],
+    );
+
+    if (context) {
+      normalizedData[contextKey] = context;
+    }
+
+    if (metaContext) {
+      normalizedData[metaContextKey] = metaContext;
+    } else {
+      delete normalizedData[metaContextKey];
+    }
+
+    delete normalizedData[legacyMetaKey];
+  }
+
+  return normalizedData;
 }
 
 function createPersistedEntityState(): PersistedEntityState {
@@ -53,6 +147,80 @@ function createRuntimeState(): ExecutionPersistenceCoordinatorRuntimeState {
     persisted: createPersistedEntityState(),
     pending: {},
     lastTouchedAt: null,
+  };
+}
+
+function shouldCompactRuntimeStateAfterBundle(
+  bundle: ExecutionPersistenceBundle,
+  state: ExecutionPersistenceCoordinatorRuntimeState,
+): boolean {
+  return (
+    Object.keys(state.pending).length === 0 &&
+    bundle.updates.some(
+      (event) =>
+        event.entityType === "routine_execution" ||
+        event.entityType === "task_execution",
+    )
+  );
+}
+
+function countPersistedEntries(state: PersistedEntityState): number {
+  return Object.values(state).reduce(
+    (total, bucket) => total + Object.keys(bucket).length,
+    0,
+  );
+}
+
+function summarizeCoordinatorRuntimeState(
+  state: ExecutionPersistenceCoordinatorRuntimeState,
+): {
+  pendingCount: number;
+  persistedCount: number;
+} {
+  return {
+    pendingCount: Object.keys(state.pending).length,
+    persistedCount: countPersistedEntries(state.persisted),
+  };
+}
+
+function collectCoordinatorStats(
+  actor: {
+    listActorKeys?: () => string[];
+    getRuntimeState?: (
+      actorKey?: string,
+    ) => ExecutionPersistenceCoordinatorRuntimeState;
+  },
+): ExecutionPersistenceCoordinatorStats {
+  const actorKeys =
+    typeof actor.listActorKeys === "function" ? actor.listActorKeys() : [];
+
+  let totalPendingCount = 0;
+  let totalPersistedCount = 0;
+  let maxPendingPerKey = 0;
+  let maxPersistedPerKey = 0;
+
+  for (const actorKey of actorKeys) {
+    const runtimeState =
+      typeof actor.getRuntimeState === "function"
+        ? actor.getRuntimeState(actorKey)
+        : undefined;
+    if (!runtimeState) {
+      continue;
+    }
+    const { pendingCount, persistedCount } =
+      summarizeCoordinatorRuntimeState(runtimeState);
+    totalPendingCount += pendingCount;
+    totalPersistedCount += persistedCount;
+    maxPendingPerKey = Math.max(maxPendingPerKey, pendingCount);
+    maxPersistedPerKey = Math.max(maxPersistedPerKey, persistedCount);
+  }
+
+  return {
+    actorKeyCount: actorKeys.length,
+    totalPendingCount,
+    totalPersistedCount,
+    maxPendingPerKey,
+    maxPersistedPerKey,
   };
 }
 
@@ -304,7 +472,33 @@ function normalizeEnsureInsertData(
 ): Record<string, any> {
   switch (entityType) {
     case "routine_execution":
-      return normalizeRoutineExecutionInsertData(data);
+      return normalizeExecutionPayloadContexts(
+        normalizeRoutineExecutionInsertData(data),
+      );
+    case "execution_trace":
+    case "task_execution":
+    case "inquiry":
+      return normalizeExecutionPayloadContexts(data);
+    case "signal_emission": {
+      const normalizedData = normalizeExecutionPayloadContexts(data);
+      delete normalizedData.meta_context;
+      delete normalizedData.metaContext;
+      return normalizedData;
+    }
+    default:
+      return data;
+  }
+}
+
+function normalizeUpdateData(
+  entityType: ExecutionPersistenceUpdateEntityType,
+  data: Record<string, any>,
+): Record<string, any> {
+  switch (entityType) {
+    case "routine_execution":
+    case "task_execution":
+    case "inquiry":
+      return normalizeExecutionPayloadContexts(data);
     default:
       return data;
   }
@@ -338,7 +532,7 @@ async function persistEvent(event: ExecutionPersistenceEvent): Promise<void> {
     buildExecutionPersistenceIntentName("update", event.entityType),
     {
       queryData: {
-        data: event.data,
+        data: normalizeUpdateData(event.entityType, event.data),
         filter: event.filter,
       },
     },
@@ -471,6 +665,7 @@ function buildTaskExecutionUpdateBundleFromContext(
 
 export default class ExecutionPersistenceCoordinator {
   private static _instance: ExecutionPersistenceCoordinator;
+  private static processedBundleCount = 0;
 
   public static get instance(): ExecutionPersistenceCoordinator {
     if (!this._instance) {
@@ -505,6 +700,7 @@ export default class ExecutionPersistenceCoordinator {
           persistDurableState: false,
           enabled: true,
           idleTtlMs: COORDINATOR_ACTOR_IDLE_TTL_MS,
+          absoluteTtlMs: COORDINATOR_ACTOR_ABSOLUTE_TTL_MS,
         },
       },
       { isMeta: true },
@@ -568,7 +764,48 @@ export default class ExecutionPersistenceCoordinator {
           );
         }
 
-        actorContext.setRuntimeState(state);
+        ExecutionPersistenceCoordinator.processedBundleCount += 1;
+        actorContext.setRuntimeState(
+          shouldCompactRuntimeStateAfterBundle(input, state)
+            ? {
+                ...createRuntimeState(),
+                lastTouchedAt: state.lastTouchedAt,
+              }
+            : state,
+        );
+
+        const currentSummary = summarizeCoordinatorRuntimeState(
+          shouldCompactRuntimeStateAfterBundle(input, state)
+            ? {
+                ...createRuntimeState(),
+                lastTouchedAt: state.lastTouchedAt,
+              }
+            : state,
+        );
+        const shouldLogStats =
+          ExecutionPersistenceCoordinator.processedBundleCount %
+            COORDINATOR_STATS_LOG_INTERVAL ===
+            0 ||
+          currentSummary.pendingCount >= COORDINATOR_STATS_LOG_PENDING_THRESHOLD ||
+          currentSummary.persistedCount >=
+            COORDINATOR_STATS_LOG_PERSISTED_THRESHOLD;
+
+        if (shouldLogStats) {
+          const stats = collectCoordinatorStats(coordinatorActor);
+          Cadenza.log("Execution persistence coordinator stats", {
+            traceId: input.traceId,
+            currentPendingCount: currentSummary.pendingCount,
+            currentPersistedCount: currentSummary.persistedCount,
+            actorKeyCount: stats.actorKeyCount,
+            totalPendingCount: stats.totalPendingCount,
+            totalPersistedCount: stats.totalPersistedCount,
+            maxPendingPerKey: stats.maxPendingPerKey,
+            maxPersistedPerKey: stats.maxPersistedPerKey,
+            processedBundleCount:
+              ExecutionPersistenceCoordinator.processedBundleCount,
+          });
+        }
+
         return {
           __success: true,
           traceId: input.traceId,

@@ -13,7 +13,7 @@ describe("CadenzaDB metadata trigger idempotency", () => {
     }
   });
 
-  it("adds do-nothing onConflict clauses to metadata insert triggers", async () => {
+  it("keeps direct insert triggers only for non-manifest-backed tables", async () => {
     vi.resetModules();
 
     const serviceModule = await import("@cadenza.io/service");
@@ -33,13 +33,13 @@ describe("CadenzaDB metadata trigger idempotency", () => {
     CadenzaDB.createCadenzaDBService();
 
     expect(capturedSchema).toBeTruthy();
-    expect(capturedSchema.tables.task.customSignals.triggers.insert).toEqual(
+    expect(capturedSchema.tables.service.customSignals.triggers.insert).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          signal: "global.meta.graph_metadata.task_created",
+          signal: "meta.create_service_requested",
           queryData: expect.objectContaining({
             onConflict: expect.objectContaining({
-              target: ["name", "service_name", "version"],
+              target: ["name"],
               action: expect.objectContaining({
                 do: "nothing",
               }),
@@ -48,39 +48,46 @@ describe("CadenzaDB metadata trigger idempotency", () => {
         }),
       ]),
     );
+    expect(capturedSchema.tables.signal_registry.fields.delivery_mode).toEqual(
+      expect.objectContaining({
+        type: "varchar",
+        default: "single",
+      }),
+    );
+    expect(capturedSchema.tables.signal_registry.fields.broadcast_filter).toEqual(
+      expect.objectContaining({
+        type: "jsonb",
+        default: null,
+      }),
+    );
     expect(
-      capturedSchema.tables.signal_registry.customSignals.triggers.insert,
+      capturedSchema.tables.database_service.customSignals.triggers.insert,
     ).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          signal: "global.meta.signal_controller.signal_added",
+          signal: "global.meta.created_database_service",
           queryData: expect.objectContaining({
             onConflict: expect.objectContaining({
-              target: ["name"],
+              target: ["service_name"],
             }),
           }),
         }),
       ]),
     );
-    expect(
-      capturedSchema.tables.intent_to_task_map.customSignals.triggers.insert,
-    ).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          signal: "global.meta.graph_metadata.task_intent_associated",
-          queryData: expect.objectContaining({
-            onConflict: expect.objectContaining({
-              target: [
-                "intent_name",
-                "task_name",
-                "task_version",
-                "service_name",
-              ],
-            }),
-          }),
-        }),
-      ]),
-    );
+    for (const tableName of [
+      "task",
+      "signal_registry",
+      "signal_to_task_map",
+      "intent_registry",
+      "intent_to_task_map",
+      "actor",
+      "actor_task_map",
+      "directional_task_graph_map",
+      "routine",
+      "task_to_routine_map",
+    ]) {
+      expect(capturedSchema.tables[tableName].customSignals).toBeUndefined();
+    }
   });
 
   it("does not expose legacy table-level full-sync query intents", async () => {
@@ -153,6 +160,29 @@ describe("CadenzaDB metadata trigger idempotency", () => {
     }
   });
 
+  it("does not expose direct actor session state graph-metadata triggers", async () => {
+    vi.resetModules();
+
+    const serviceModule = await import("@cadenza.io/service");
+    const Cadenza = serviceModule.default;
+    const dbModule = await import("../src/index");
+    const CadenzaDB = dbModule.default;
+
+    let capturedSchema: any = null;
+
+    vi.spyOn(Cadenza, "createMetaDatabaseService").mockImplementation(
+      ((_: string, schema: any) => {
+        capturedSchema = schema;
+        return undefined;
+      }) as any,
+    );
+
+    CadenzaDB.createCadenzaDBService();
+
+    expect(capturedSchema).toBeTruthy();
+    expect(capturedSchema.tables.actor_session_state.customSignals).toBeUndefined();
+  });
+
   it("does not expose a direct service communication insert trigger", async () => {
     vi.resetModules();
 
@@ -198,7 +228,7 @@ describe("CadenzaDB metadata trigger idempotency", () => {
     CadenzaDB.createCadenzaDBService();
 
     expect(capturedSchema).toBeTruthy();
-    expect(capturedSchema.version).toBe(4);
+    expect(capturedSchema.version).toBe(5);
     expect(capturedSchema.migrationPolicy).toEqual(
       expect.objectContaining({
         adoptExistingVersion: 1,
@@ -248,6 +278,10 @@ describe("CadenzaDB metadata trigger idempotency", () => {
               ifExists: true,
             }),
           ],
+        }),
+        expect.objectContaining({
+          version: 5,
+          name: "widen-structural-name-columns",
         }),
       ]),
     );

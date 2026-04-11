@@ -6,7 +6,10 @@ import Cadenza, {
   AUTHORITY_SERVICE_INSTANCE_TRANSPORT_REGISTER_INTENT,
   AUTHORITY_SERVICE_MANIFEST_UPDATED_SIGNAL,
 } from "@cadenza.io/service";
-import CadenzaDB, { resolveLocalServiceRegistrySyncTasks } from "../src/index";
+import CadenzaDB, {
+  collectProjectedManifestStructuralRowsFromManifestRows,
+  resolveLocalServiceRegistrySyncTasks,
+} from "../src/index";
 
 describe("local CadenzaDB sync task resolution", () => {
   afterEach(() => {
@@ -343,7 +346,6 @@ describe("local CadenzaDB sync task resolution", () => {
       (() => undefined) as any,
     );
     vi.spyOn(FreshCadenza, "interval").mockImplementation((() => undefined) as any);
-    vi.spyOn(FreshCadenza, "schedule").mockImplementation((() => undefined) as any);
 
     FreshCadenzaDB.createCadenzaDBService();
     const ensureProjectionTask = FreshCadenza.get(
@@ -406,7 +408,7 @@ describe("local CadenzaDB sync task resolution", () => {
       ],
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 250));
 
     expect(projectedInstances).toEqual([
       expect.objectContaining({
@@ -428,6 +430,201 @@ describe("local CadenzaDB sync task resolution", () => {
         manifestHash: "runner-manifest-v2",
       }),
     ]);
+  });
+
+  it("wires authority registry replay through normalize and collect tasks before projection", async () => {
+    vi.resetModules();
+
+    const serviceModule = await import("@cadenza.io/service");
+    const FreshCadenza = serviceModule.default;
+    const dbModule = await import("../src/index");
+    const FreshCadenzaDB = dbModule.default;
+
+    FreshCadenza.createMetaTask("Query service_instance", () => ({
+      rows: [
+        {
+          uuid: "predictor-1",
+          service_name: "PredictorService",
+          is_active: true,
+          is_non_responsive: false,
+          is_blocked: false,
+          is_frontend: false,
+          is_database: false,
+          health: {},
+        },
+      ],
+      rowCount: 1,
+    }));
+    FreshCadenza.createMetaTask("Query service_instance_transport", () => ({
+      rows: [
+        {
+          uuid: "predictor-transport-1",
+          service_instance_id: "predictor-1",
+          role: "internal",
+          origin: "http://predictor:3005",
+          protocols: ["rest"],
+          deleted: false,
+        },
+      ],
+      rowCount: 1,
+    }));
+    FreshCadenza.createMetaTask("Query service_manifest", () => ({
+      rows: [
+        {
+          service_instance_id: "predictor-1",
+          manifest: {
+            serviceName: "PredictorService",
+            serviceInstanceId: "predictor-1",
+            revision: 2,
+            manifestHash: "predictor-manifest-v2",
+            publishedAt: "2026-03-30T12:00:00.000Z",
+            tasks: [
+              {
+                name: "Compute prediction",
+                version: 1,
+                service_name: "PredictorService",
+                display_name: "Compute prediction",
+                description: "Computes a device prediction.",
+                is_meta: false,
+              },
+            ],
+            signals: [
+              {
+                name: "predictor_service.ready",
+                action: "ready",
+                domain: "predictor_service",
+                is_meta: false,
+                is_global: false,
+                delivery_mode: "single",
+              },
+            ],
+            intents: [
+              {
+                name: "iot-prediction-compute",
+                input: { type: "object" },
+                output: { type: "object" },
+                is_meta: false,
+                description: "",
+              },
+            ],
+            actors: [
+              {
+                name: "PredictionSessionActor",
+                version: 1,
+                service_name: "PredictorService",
+                default_key: "device:unknown",
+                description: "Durable predictor session state.",
+                load_policy: "eager",
+                write_contract: "overwrite",
+                runtime_read_guard: "none",
+                consistency_profile: null,
+                key_definition: null,
+                state_definition: { durable: { initState: {} } },
+                retry_policy: {},
+                idempotency_policy: {},
+                session_policy: { persistDurableState: true },
+                is_meta: false,
+              },
+            ],
+            routines: [],
+            directionalTaskMaps: [],
+            signalToTaskMaps: [],
+            intentToTaskMaps: [],
+            actorTaskMaps: [],
+            taskToRoutineMaps: [],
+          },
+        },
+      ],
+      rowCount: 1,
+    }));
+
+    vi.spyOn(FreshCadenza, "createMetaDatabaseService").mockImplementation(
+      (() => undefined) as any,
+    );
+    vi.spyOn(FreshCadenza, "interval").mockImplementation((() => undefined) as any);
+
+    FreshCadenzaDB.createCadenzaDBService();
+
+    const executeTask = FreshCadenza.get(
+      "Execute authority registry projection replay",
+    ) as { nextTasks?: Set<{ name: string }> } | undefined;
+    const requestTask = FreshCadenza.get(
+      "Request authority registry projection replay",
+    ) as { nextTasks?: Set<{ name: string }> } | undefined;
+    const queryServiceInstanceTask = FreshCadenza.get(
+      "Query service_instance",
+    ) as { nextTasks?: Set<{ name: string }> } | undefined;
+    const queryServiceInstanceTransportTask = FreshCadenza.get(
+      "Query service_instance_transport",
+    ) as { nextTasks?: Set<{ name: string }> } | undefined;
+    const queryServiceManifestTask = FreshCadenza.get(
+      "Query service_manifest",
+    ) as { nextTasks?: Set<{ name: string }> } | undefined;
+    const normalizeInstancesTask = FreshCadenza.get(
+      "Normalize projected authority service instances",
+    ) as { nextTasks?: Set<{ name: string }> } | undefined;
+    const normalizeTransportsTask = FreshCadenza.get(
+      "Normalize projected authority service instance transports",
+    ) as { nextTasks?: Set<{ name: string }> } | undefined;
+    const normalizeManifestsTask = FreshCadenza.get(
+      "Normalize projected authority service manifests",
+    ) as { nextTasks?: Set<{ name: string }> } | undefined;
+    const collectTask = FreshCadenza.get(
+      "Collect authority registry projection replay",
+    ) as { nextTasks?: Set<{ name: string }> } | undefined;
+    const projectTask = FreshCadenza.get(
+      "Project persisted authority registry state",
+    ) as { name: string } | undefined;
+
+    expect(executeTask).toBeTruthy();
+    expect(requestTask).toBeTruthy();
+    expect(collectTask).toBeTruthy();
+    expect(projectTask).toBeTruthy();
+    expect(
+      Array.from(requestTask?.nextTasks ?? []).map((task) => task.name),
+    ).toContain("Execute authority registry projection replay");
+    expect(
+      Array.from(executeTask?.nextTasks ?? []).map((task) => task.name),
+    ).toEqual(
+      expect.arrayContaining([
+        "Query service_instance",
+        "Query service_instance_transport",
+        "Query service_manifest",
+      ]),
+    );
+    expect(
+      Array.from(queryServiceInstanceTask?.nextTasks ?? []).map(
+        (task) => task.name,
+      ),
+    ).toContain("Normalize projected authority service instances");
+    expect(
+      Array.from(queryServiceInstanceTransportTask?.nextTasks ?? []).map(
+        (task) => task.name,
+      ),
+    ).toContain("Normalize projected authority service instance transports");
+    expect(
+      Array.from(queryServiceManifestTask?.nextTasks ?? []).map(
+        (task) => task.name,
+      ),
+    ).toContain("Normalize projected authority service manifests");
+    expect(
+      Array.from(normalizeInstancesTask?.nextTasks ?? []).map(
+        (task) => task.name,
+      ),
+    ).toContain("Collect authority registry projection replay");
+    expect(
+      Array.from(normalizeTransportsTask?.nextTasks ?? []).map(
+        (task) => task.name,
+      ),
+    ).toContain("Collect authority registry projection replay");
+    expect(
+      Array.from(normalizeManifestsTask?.nextTasks ?? []).map(
+        (task) => task.name,
+      ),
+    ).toContain("Collect authority registry projection replay");
+    expect(
+      Array.from(collectTask?.nextTasks ?? []).map((task) => task.name),
+    ).toContain("Project persisted authority registry state");
   });
 
   it("registers the authority-local same-origin reconciliation flow", async () => {
@@ -937,9 +1134,20 @@ describe("local CadenzaDB sync task resolution", () => {
     ).toBeFalsy();
 
     FreshCadenza.createMetaTask("Insert service_manifest", () => ({}));
-    FreshCadenza.emit("meta.service_registry.instance_inserted", {});
+    FreshCadenza.emit("meta.task.created", {
+      data: {
+        name: "Insert service_manifest",
+      },
+    });
+    FreshCadenza.emit("global.meta.sync_controller.synced", {
+      __reason: "test_manifest_flow_late_task_registration",
+    });
+    const ensureTask = FreshCadenza.get(
+      "Ensure authority service manifest flow is registered",
+    );
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(ensureTask).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 150));
 
     const observer = FreshCadenza.inquiryBroker.inquiryObservers.get(
       AUTHORITY_SERVICE_MANIFEST_REPORT_INTENT,
@@ -1024,5 +1232,1008 @@ describe("local CadenzaDB sync task resolution", () => {
       manifestHash: "m-test",
       publishedAt: "2026-03-29T12:00:00.000Z",
     });
+  });
+
+  it("collects latest manifest structural rows for manifest entities and maps", () => {
+    const projectedRows = collectProjectedManifestStructuralRowsFromManifestRows({
+      serviceName: "TelemetryCollectorService",
+      serviceManifests: [
+        {
+          manifest: {
+            serviceName: "TelemetryCollectorService",
+            serviceInstanceId: "telemetry-instance-old",
+            revision: 1,
+            manifestHash: "telemetry-v1",
+            publishedAt: "2026-04-09T10:00:00.000Z",
+            tasks: [
+              {
+                name: "Record telemetry ingest session state",
+                version: 1,
+                service_name: "TelemetryCollectorService",
+                display_name: "Record telemetry ingest session state",
+                description: "old task",
+                is_meta: false,
+              },
+            ],
+            signals: [
+              {
+                name: "global.iot.telemetry.ingested",
+                is_global: true,
+                domain: "iot.telemetry",
+                action: "ingested",
+                is_meta: false,
+              },
+            ],
+            intents: [
+              {
+                name: "iot-telemetry-session-get",
+                description: "old intent",
+                input: { type: "object" },
+                output: { type: "object" },
+                is_meta: false,
+              },
+            ],
+            actors: [
+              {
+                name: "TelemetrySessionActor",
+                version: 1,
+                service_name: "TelemetryCollectorService",
+                description: "old",
+                default_key: "device:unknown",
+                load_policy: "eager",
+                write_contract: "overwrite",
+                runtime_read_guard: "none",
+                consistency_profile: null,
+                key_definition: null,
+                state_definition: {},
+                retry_policy: {},
+                idempotency_policy: {},
+                session_policy: { persistDurableState: true },
+                is_meta: false,
+              },
+            ],
+            routines: [
+              {
+                name: "Telemetry ingest routine",
+                version: 1,
+                service_name: "TelemetryCollectorService",
+                description: "old routine",
+                is_meta: false,
+              },
+            ],
+            directionalTaskMaps: [
+              {
+                task_name: "Get telemetry session state",
+                predecessor_task_name: "Record telemetry ingest session state",
+                task_version: 1,
+                predecessor_task_version: 1,
+                service_name: "TelemetryCollectorService",
+                predecessor_service_name: "TelemetryCollectorService",
+              },
+            ],
+            signalToTaskMaps: [],
+            intentToTaskMaps: [],
+            actorTaskMaps: [],
+            taskToRoutineMaps: [
+              {
+                routine_name: "Telemetry ingest routine",
+                routine_version: 1,
+                service_name: "TelemetryCollectorService",
+                task_name: "Record telemetry ingest session state",
+                task_version: 1,
+              },
+            ],
+          },
+        },
+        {
+          manifest: {
+            serviceName: "TelemetryCollectorService",
+            serviceInstanceId: "telemetry-instance-new",
+            revision: 2,
+            manifestHash: "telemetry-v2",
+            publishedAt: "2026-04-09T10:05:00.000Z",
+            tasks: [
+              {
+                name: "Record telemetry ingest session state",
+                version: 1,
+                service_name: "TelemetryCollectorService",
+                display_name: "Record telemetry ingest session state",
+                description: "new task",
+                is_meta: false,
+              },
+              {
+                name: "Get telemetry session state",
+                version: 1,
+                service_name: "TelemetryCollectorService",
+                display_name: "Get telemetry session state",
+                description: "read task",
+                is_meta: false,
+              },
+            ],
+            signals: [
+              {
+                name: "global.iot.telemetry.ingested",
+                is_global: true,
+                domain: "iot.telemetry",
+                action: "ingested",
+                is_meta: false,
+              },
+            ],
+            intents: [
+              {
+                name: "iot-telemetry-session-get",
+                description: "new intent",
+                input: { type: "object" },
+                output: { type: "object" },
+                is_meta: false,
+              },
+            ],
+            actors: [
+              {
+                name: "TelemetrySessionActor",
+                version: 1,
+                service_name: "TelemetryCollectorService",
+                description: "new",
+                default_key: "device:unknown",
+                load_policy: "eager",
+                write_contract: "overwrite",
+                runtime_read_guard: "none",
+                consistency_profile: null,
+                key_definition: null,
+                state_definition: {},
+                retry_policy: {},
+                idempotency_policy: {},
+                session_policy: { persistDurableState: true },
+                is_meta: false,
+              },
+              {
+                name: "ServiceLifecycleFlushActor",
+                version: 1,
+                service_name: "TelemetryCollectorService",
+                description: "flush",
+                default_key: "service-lifecycle-flush-default",
+                load_policy: "eager",
+                write_contract: "overwrite",
+                runtime_read_guard: "none",
+                consistency_profile: null,
+                key_definition: null,
+                state_definition: {},
+                retry_policy: {},
+                idempotency_policy: {},
+                session_policy: { enabled: true },
+                is_meta: true,
+              },
+            ],
+            routines: [
+              {
+                name: "Telemetry ingest routine",
+                version: 1,
+                service_name: "TelemetryCollectorService",
+                description: "new routine",
+                is_meta: false,
+              },
+            ],
+            directionalTaskMaps: [
+              {
+                task_name: "Get telemetry session state",
+                predecessor_task_name: "Record telemetry ingest session state",
+                task_version: 1,
+                predecessor_task_version: 1,
+                service_name: "TelemetryCollectorService",
+                predecessor_service_name: "TelemetryCollectorService",
+              },
+            ],
+            signalToTaskMaps: [
+              {
+                signal_name: "global.iot.telemetry.ingested",
+                service_name: "TelemetryCollectorService",
+                task_name: "Record telemetry ingest session state",
+                task_version: 1,
+              },
+            ],
+            intentToTaskMaps: [
+              {
+                intent_name: "iot-telemetry-session-get",
+                service_name: "TelemetryCollectorService",
+                task_name: "Get telemetry session state",
+                task_version: 1,
+              },
+            ],
+            actorTaskMaps: [
+              {
+                actor_name: "TelemetrySessionActor",
+                actor_version: 1,
+                service_name: "TelemetryCollectorService",
+                task_name: "Record telemetry ingest session state",
+                task_version: 1,
+                mode: "write",
+                description: "Updates durable telemetry session actor.",
+                is_meta: false,
+              },
+            ],
+            taskToRoutineMaps: [
+              {
+                routine_name: "Telemetry ingest routine",
+                routine_version: 1,
+                service_name: "TelemetryCollectorService",
+                task_name: "Record telemetry ingest session state",
+                task_version: 1,
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(projectedRows.tasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "Record telemetry ingest session state",
+          service_name: "TelemetryCollectorService",
+          description: "new task",
+          function_string: "",
+          flags: {},
+          deleted: false,
+        }),
+        expect.objectContaining({
+          name: "Get telemetry session state",
+          service_name: "TelemetryCollectorService",
+          function_string: "",
+          flags: {},
+          deleted: false,
+        }),
+      ]),
+    );
+    expect(projectedRows.signals).toEqual([
+      expect.objectContaining({
+        name: "global.iot.telemetry.ingested",
+        deleted: false,
+      }),
+    ]);
+    expect(projectedRows.intents).toEqual([
+      expect.objectContaining({
+        name: "iot-telemetry-session-get",
+        description: "new intent",
+        deleted: false,
+      }),
+    ]);
+    expect(projectedRows.actors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "TelemetrySessionActor",
+          service_name: "TelemetryCollectorService",
+          description: "new",
+          deleted: false,
+        }),
+        expect.objectContaining({
+          name: "ServiceLifecycleFlushActor",
+          service_name: "TelemetryCollectorService",
+          is_meta: true,
+          deleted: false,
+        }),
+      ]),
+    );
+    expect(projectedRows.routines).toEqual([
+      expect.objectContaining({
+        name: "Telemetry ingest routine",
+        service_name: "TelemetryCollectorService",
+        description: "new routine",
+        deleted: false,
+      }),
+    ]);
+    expect(projectedRows.directionalTaskMaps).toEqual([
+      expect.objectContaining({
+        task_name: "Get telemetry session state",
+        predecessor_task_name: "Record telemetry ingest session state",
+        service_name: "TelemetryCollectorService",
+        predecessor_service_name: "TelemetryCollectorService",
+        deleted: false,
+      }),
+    ]);
+    expect(projectedRows.signalToTaskMaps).toEqual([
+      expect.objectContaining({
+        signal_name: "global.iot.telemetry.ingested",
+        service_name: "TelemetryCollectorService",
+        task_name: "Record telemetry ingest session state",
+        deleted: false,
+      }),
+    ]);
+    expect(projectedRows.intentToTaskMaps).toEqual([
+      expect.objectContaining({
+        intent_name: "iot-telemetry-session-get",
+        service_name: "TelemetryCollectorService",
+        task_name: "Get telemetry session state",
+        deleted: false,
+      }),
+    ]);
+    expect(projectedRows.actorTaskMaps).toEqual([
+      expect.objectContaining({
+        actor_name: "TelemetrySessionActor",
+        service_name: "TelemetryCollectorService",
+        task_name: "Record telemetry ingest session state",
+        deleted: false,
+      }),
+    ]);
+    expect(projectedRows.taskToRoutineMaps).toEqual([
+      expect.objectContaining({
+        routine_name: "Telemetry ingest routine",
+        task_name: "Record telemetry ingest session state",
+        service_name: "TelemetryCollectorService",
+        deleted: false,
+      }),
+    ]);
+  });
+
+  it("replays manifest structural rows into local entity and map insert tasks", async () => {
+    vi.resetModules();
+
+    const serviceModule = await import("@cadenza.io/service");
+    const FreshCadenza = serviceModule.default;
+    const dbModule = await import("../src/index");
+    const FreshCadenzaDB = dbModule.default;
+
+    const capturedTaskInserts: Array<Record<string, any>> = [];
+    const capturedSignalInserts: Array<Record<string, any>> = [];
+    const capturedIntentInserts: Array<Record<string, any>> = [];
+    const capturedActorInserts: Array<Record<string, any>> = [];
+    const capturedRoutineInserts: Array<Record<string, any>> = [];
+    const capturedTaskRelationshipInserts: Array<Record<string, any>> = [];
+    const capturedSignalMapInserts: Array<Record<string, any>> = [];
+    const capturedIntentMapInserts: Array<Record<string, any>> = [];
+    const capturedActorTaskMapInserts: Array<Record<string, any>> = [];
+    const capturedTaskToRoutineMapInserts: Array<Record<string, any>> = [];
+    const capturedProjectionRequests: Array<Record<string, any>> = [];
+    const capturedAssociationRequests: Array<Record<string, any>> = [];
+
+    FreshCadenza.createMetaTask("Query service_instance", () => ({ rows: [] }));
+    FreshCadenza.createMetaTask("Query service_instance_transport", () => ({
+      rows: [],
+    }));
+    FreshCadenza.createMetaTask("Query service_manifest", () => ({
+      rows: [
+        {
+          service_instance_id: "telemetry-instance-1",
+          manifest: {
+            serviceName: "TelemetryCollectorService",
+            serviceInstanceId: "telemetry-instance-1",
+            revision: 1,
+            manifestHash: "telemetry-v1",
+            publishedAt: "2026-04-09T10:00:00.000Z",
+            tasks: [
+              {
+                name: "Record telemetry ingest session state",
+                version: 1,
+                service_name: "TelemetryCollectorService",
+                display_name: "Record telemetry ingest session state",
+                description: "Persists ingest state.",
+                is_meta: false,
+              },
+              {
+                name: "Get telemetry session state",
+                version: 1,
+                service_name: "TelemetryCollectorService",
+                display_name: "Get telemetry session state",
+                description: "Reads ingest state.",
+                is_meta: false,
+              },
+            ],
+            signals: [
+              {
+                name: "global.iot.telemetry.ingested",
+                is_global: true,
+                domain: "iot.telemetry",
+                action: "ingested",
+                is_meta: false,
+              },
+            ],
+            intents: [
+              {
+                name: "iot-telemetry-session-get",
+                description: "Gets telemetry session state.",
+                input: { type: "object" },
+                output: { type: "object" },
+                is_meta: false,
+              },
+            ],
+            actors: [
+              {
+                name: "TelemetrySessionActor",
+                version: 1,
+                service_name: "TelemetryCollectorService",
+                description: "telemetry actor",
+                default_key: "device:unknown",
+                load_policy: "eager",
+                write_contract: "overwrite",
+                runtime_read_guard: "none",
+                consistency_profile: null,
+                key_definition: null,
+                state_definition: {},
+                retry_policy: {},
+                idempotency_policy: {},
+                session_policy: { persistDurableState: true },
+                is_meta: false,
+              },
+            ],
+            routines: [
+              {
+                name: "Telemetry ingest routine",
+                version: 1,
+                service_name: "TelemetryCollectorService",
+                description: "Runs telemetry ingest flow.",
+                is_meta: false,
+              },
+            ],
+            directionalTaskMaps: [
+              {
+                task_name: "Get telemetry session state",
+                predecessor_task_name: "Record telemetry ingest session state",
+                task_version: 1,
+                predecessor_task_version: 1,
+                service_name: "TelemetryCollectorService",
+                predecessor_service_name: "TelemetryCollectorService",
+              },
+            ],
+            signalToTaskMaps: [
+              {
+                signal_name: "global.iot.telemetry.ingested",
+                service_name: "TelemetryCollectorService",
+                task_name: "Record telemetry ingest session state",
+                task_version: 1,
+              },
+            ],
+            intentToTaskMaps: [
+              {
+                intent_name: "iot-telemetry-session-get",
+                service_name: "TelemetryCollectorService",
+                task_name: "Get telemetry session state",
+                task_version: 1,
+              },
+            ],
+            actorTaskMaps: [
+              {
+                actor_name: "TelemetrySessionActor",
+                actor_version: 1,
+                service_name: "TelemetryCollectorService",
+                task_name: "Record telemetry ingest session state",
+                task_version: 1,
+                mode: "write",
+                description: "Updates durable telemetry session actor.",
+                is_meta: false,
+              },
+            ],
+            taskToRoutineMaps: [
+              {
+                routine_name: "Telemetry ingest routine",
+                routine_version: 1,
+                service_name: "TelemetryCollectorService",
+                task_name: "Record telemetry ingest session state",
+                task_version: 1,
+              },
+            ],
+          },
+        },
+      ],
+    }));
+
+    FreshCadenza.createMetaTask("Insert task", (ctx) => {
+      capturedTaskInserts.push(ctx as Record<string, any>);
+      return { rowCount: 1, __success: true };
+    });
+    FreshCadenza.createMetaTask("Insert signal_registry", (ctx) => {
+      capturedSignalInserts.push(ctx as Record<string, any>);
+      return { rowCount: 1, __success: true };
+    });
+    FreshCadenza.createMetaTask("Insert intent_registry", (ctx) => {
+      capturedIntentInserts.push(ctx as Record<string, any>);
+      return { rowCount: 1, __success: true };
+    });
+    FreshCadenza.createMetaTask("Insert actor", (ctx) => {
+      capturedActorInserts.push(ctx as Record<string, any>);
+      return { rowCount: 1, __success: true };
+    });
+    FreshCadenza.createMetaTask("Insert routine", (ctx) => {
+      capturedRoutineInserts.push(ctx as Record<string, any>);
+      return { rowCount: 1, __success: true };
+    });
+    FreshCadenza.createMetaTask("Insert directional_task_graph_map", (ctx) => {
+      capturedTaskRelationshipInserts.push(ctx as Record<string, any>);
+      return { rowCount: 1, __success: true };
+    });
+    FreshCadenza.createMetaTask("Insert signal_to_task_map", (ctx) => {
+      capturedSignalMapInserts.push(ctx as Record<string, any>);
+      return { rowCount: 1, __success: true };
+    });
+    FreshCadenza.createMetaTask("Insert intent_to_task_map", (ctx) => {
+      capturedIntentMapInserts.push(ctx as Record<string, any>);
+      return { rowCount: 1, __success: true };
+    });
+    FreshCadenza.createMetaTask("Insert actor_task_map", (ctx) => {
+      capturedActorTaskMapInserts.push(ctx as Record<string, any>);
+      return { rowCount: 1, __success: true };
+    });
+    FreshCadenza.createMetaTask("Insert task_to_routine_map", (ctx) => {
+      capturedTaskToRoutineMapInserts.push(ctx as Record<string, any>);
+      return { rowCount: 1, __success: true };
+    });
+    FreshCadenza.createMetaTask(
+      "Capture manifest entity projection request",
+      (ctx) => {
+        capturedProjectionRequests.push(ctx as Record<string, any>);
+        return true;
+      },
+    ).doOn("meta.cadenza_db.manifest_entity_projection_requested");
+    FreshCadenza.createMetaTask(
+      "Capture manifest association projection request",
+      (ctx) => {
+        capturedAssociationRequests.push(ctx as Record<string, any>);
+        return true;
+      },
+    ).doOn("meta.cadenza_db.manifest_association_projection_requested");
+
+    vi.spyOn(FreshCadenza, "createMetaDatabaseService").mockImplementation(
+      (() => undefined) as any,
+    );
+    vi.spyOn(FreshCadenza, "interval").mockImplementation((() => undefined) as any);
+    FreshCadenzaDB.createCadenzaDBService();
+
+    const ensureTask = FreshCadenza.get(
+      "Ensure authority manifest structural projection flow is registered",
+    );
+    expect(ensureTask).toBeTruthy();
+    expect(
+      FreshCadenza.get("Prepare manifest task projection insert"),
+    ).toBeTruthy();
+    expect(
+      FreshCadenza.get("Prepare manifest signal task map projection insert"),
+    ).toBeTruthy();
+    const projectTask = FreshCadenza.get(
+      "Project persisted authority registry state",
+    );
+    expect(projectTask).toBeTruthy();
+
+    FreshCadenza.run(projectTask!, {
+      serviceInstances: [],
+      serviceInstanceTransports: [],
+      serviceManifests: [
+        {
+          service_instance_id: "telemetry-instance-1",
+          manifest: {
+            serviceName: "TelemetryCollectorService",
+            serviceInstanceId: "telemetry-instance-1",
+            revision: 1,
+            manifestHash: "telemetry-v1",
+            publishedAt: "2026-04-09T10:00:00.000Z",
+            tasks: [
+              {
+                name: "Record telemetry ingest session state",
+                version: 1,
+                service_name: "TelemetryCollectorService",
+                display_name: "Record telemetry ingest session state",
+                description: "Persists ingest state.",
+                is_meta: false,
+              },
+              {
+                name: "Get telemetry session state",
+                version: 1,
+                service_name: "TelemetryCollectorService",
+                display_name: "Get telemetry session state",
+                description: "Reads ingest state.",
+                is_meta: false,
+              },
+            ],
+            signals: [
+              {
+                name: "global.iot.telemetry.ingested",
+                is_global: true,
+                domain: "iot.telemetry",
+                action: "ingested",
+                is_meta: false,
+              },
+            ],
+            intents: [
+              {
+                name: "iot-telemetry-session-get",
+                description: "Gets telemetry session state.",
+                input: { type: "object" },
+                output: { type: "object" },
+                is_meta: false,
+              },
+            ],
+            actors: [
+              {
+                name: "TelemetrySessionActor",
+                version: 1,
+                service_name: "TelemetryCollectorService",
+                description: "telemetry actor",
+                default_key: "device:unknown",
+                load_policy: "eager",
+                write_contract: "overwrite",
+                runtime_read_guard: "none",
+                consistency_profile: null,
+                key_definition: null,
+                state_definition: {},
+                retry_policy: {},
+                idempotency_policy: {},
+                session_policy: { persistDurableState: true },
+                is_meta: false,
+              },
+            ],
+            routines: [
+              {
+                name: "Telemetry ingest routine",
+                version: 1,
+                service_name: "TelemetryCollectorService",
+                description: "Runs telemetry ingest flow.",
+                is_meta: false,
+              },
+            ],
+            directionalTaskMaps: [
+              {
+                task_name: "Get telemetry session state",
+                predecessor_task_name: "Record telemetry ingest session state",
+                task_version: 1,
+                predecessor_task_version: 1,
+                service_name: "TelemetryCollectorService",
+                predecessor_service_name: "TelemetryCollectorService",
+              },
+            ],
+            signalToTaskMaps: [
+              {
+                signal_name: "global.iot.telemetry.ingested",
+                service_name: "TelemetryCollectorService",
+                task_name: "Record telemetry ingest session state",
+                task_version: 1,
+              },
+            ],
+            intentToTaskMaps: [
+              {
+                intent_name: "iot-telemetry-session-get",
+                service_name: "TelemetryCollectorService",
+                task_name: "Get telemetry session state",
+                task_version: 1,
+              },
+            ],
+            actorTaskMaps: [
+              {
+                actor_name: "TelemetrySessionActor",
+                actor_version: 1,
+                service_name: "TelemetryCollectorService",
+                task_name: "Record telemetry ingest session state",
+                task_version: 1,
+                mode: "write",
+                description: "Updates durable telemetry session actor.",
+                is_meta: false,
+              },
+            ],
+            taskToRoutineMaps: [
+              {
+                routine_name: "Telemetry ingest routine",
+                routine_version: 1,
+                service_name: "TelemetryCollectorService",
+                task_name: "Record telemetry ingest session state",
+                task_version: 1,
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(capturedProjectionRequests).toHaveLength(1);
+    expect(capturedAssociationRequests).toHaveLength(1);
+    expect(capturedTaskInserts).toHaveLength(1);
+    expect(capturedSignalInserts).toHaveLength(1);
+    expect(capturedIntentInserts).toHaveLength(1);
+    expect(capturedActorInserts).toHaveLength(1);
+    expect(capturedRoutineInserts).toHaveLength(1);
+    expect(capturedTaskRelationshipInserts).toHaveLength(1);
+    expect(capturedTaskToRoutineMapInserts).toHaveLength(1);
+    expect(capturedTaskInserts[0]).toMatchObject({
+      data: expect.arrayContaining([
+        expect.objectContaining({
+          name: "Record telemetry ingest session state",
+          service_name: "TelemetryCollectorService",
+          function_string: "",
+          flags: {},
+        }),
+      ]),
+    });
+    expect(capturedTaskInserts[0]?.data?.[0]).not.toHaveProperty("display_name");
+    expect(capturedTaskInserts[0]?.queryData?.data?.[0]).not.toHaveProperty(
+      "display_name",
+    );
+    expect(capturedTaskInserts[0]?.queryData?.onConflict?.action?.set).toEqual(
+      expect.objectContaining({
+        function_string: "excluded",
+        retry_count: "excluded",
+        is_hidden: "excluded",
+      }),
+    );
+    expect(
+      capturedTaskInserts[0]?.queryData?.onConflict?.action?.set,
+    ).not.toHaveProperty("display_name");
+    expect(
+      capturedTaskInserts[0]?.queryData?.onConflict?.action?.set,
+    ).not.toHaveProperty("retry_attempts");
+    expect(capturedSignalInserts[0]).toMatchObject({
+      data: [
+        expect.objectContaining({
+          name: "global.iot.telemetry.ingested",
+        }),
+      ],
+    });
+    expect(capturedIntentInserts[0]).toMatchObject({
+      data: [
+        expect.objectContaining({
+          name: "iot-telemetry-session-get",
+        }),
+      ],
+    });
+    expect(capturedActorInserts[0]).toMatchObject({
+      data: [
+        expect.objectContaining({
+          name: "TelemetrySessionActor",
+          service_name: "TelemetryCollectorService",
+        }),
+      ],
+      queryData: {
+        data: [
+          expect.objectContaining({
+            name: "TelemetrySessionActor",
+            service_name: "TelemetryCollectorService",
+          }),
+        ],
+      },
+    });
+    expect(capturedRoutineInserts[0]).toMatchObject({
+      data: [
+        expect.objectContaining({
+          name: "Telemetry ingest routine",
+          service_name: "TelemetryCollectorService",
+        }),
+      ],
+    });
+    expect(capturedTaskRelationshipInserts[0]).toMatchObject({
+      data: [
+        expect.objectContaining({
+          task_name: "Get telemetry session state",
+          predecessor_task_name: "Record telemetry ingest session state",
+        }),
+      ],
+    });
+
+    expect(capturedSignalMapInserts).toHaveLength(1);
+    expect(capturedSignalMapInserts[0]).toMatchObject({
+      data: [
+        expect.objectContaining({
+          signal_name: "global.iot.telemetry.ingested",
+          service_name: "TelemetryCollectorService",
+        }),
+      ],
+    });
+
+    expect(capturedIntentMapInserts).toHaveLength(1);
+    expect(capturedIntentMapInserts[0]).toMatchObject({
+      data: [
+        expect.objectContaining({
+          intent_name: "iot-telemetry-session-get",
+          service_name: "TelemetryCollectorService",
+        }),
+      ],
+    });
+
+    expect(capturedActorTaskMapInserts).toHaveLength(1);
+    expect(capturedActorTaskMapInserts[0]).toMatchObject({
+      data: [
+        expect.objectContaining({
+          actor_name: "TelemetrySessionActor",
+          service_name: "TelemetryCollectorService",
+        }),
+      ],
+    });
+    expect(capturedTaskToRoutineMapInserts[0]).toMatchObject({
+      data: [
+        expect.objectContaining({
+          routine_name: "Telemetry ingest routine",
+          task_name: "Record telemetry ingest session state",
+          service_name: "TelemetryCollectorService",
+        }),
+      ],
+    });
+  });
+
+  it("registers the authority registry projection flow after local query tasks appear", async () => {
+    vi.resetModules();
+
+    const serviceModule = await import("@cadenza.io/service");
+    const FreshCadenza = serviceModule.default;
+    const dbModule = await import("../src/index");
+    const FreshCadenzaDB = dbModule.default;
+
+    vi.spyOn(FreshCadenza, "createMetaDatabaseService").mockImplementation(
+      (() => undefined) as any,
+    );
+    vi.spyOn(FreshCadenza, "interval").mockImplementation((() => undefined) as any);
+    vi.spyOn(FreshCadenza, "schedule").mockImplementation((() => undefined) as any);
+
+    FreshCadenzaDB.createCadenzaDBService();
+
+    FreshCadenza.createMetaTask("Query service_instance", () => ({ rows: [] }));
+    FreshCadenza.createMetaTask("Query service_instance_transport", () => ({
+      rows: [],
+    }));
+    FreshCadenza.createMetaTask("Query service_manifest", () => ({ rows: [] }));
+
+    const ensureTask = FreshCadenza.get(
+      "Ensure authority registry projection flow is registered",
+    );
+    expect(ensureTask).toBeTruthy();
+
+    FreshCadenza.run(ensureTask!, {
+      __reason: "test_late_registry_projection_registration",
+    });
+
+    expect(
+      FreshCadenza.get("Execute authority registry projection replay"),
+    ).toBeTruthy();
+    expect(
+      FreshCadenza.get("Collect authority registry projection replay"),
+    ).toBeTruthy();
+    expect(
+      FreshCadenza.get("Project persisted authority registry state"),
+    ).toBeTruthy();
+  });
+
+  it("retains authority registry projection identity when query branches drop replay context", async () => {
+    vi.resetModules();
+
+    const serviceModule = await import("@cadenza.io/service");
+    const FreshCadenza = serviceModule.default;
+    const dbModule = await import("../src/index");
+    const FreshCadenzaDB = dbModule.default;
+
+    vi.spyOn(FreshCadenza, "createMetaDatabaseService").mockImplementation(
+      (() => undefined) as any,
+    );
+    vi.spyOn(FreshCadenza, "interval").mockImplementation((() => undefined) as any);
+    vi.spyOn(FreshCadenza, "schedule").mockImplementation((() => undefined) as any);
+
+    FreshCadenza.createMetaTask("Query service_instance", () => ({
+      rows: [{ uuid: "runner-1" }],
+    }));
+    FreshCadenza.createMetaTask("Query service_instance_transport", () => ({
+      rows: [{ uuid: "transport-1", service_instance_id: "runner-1" }],
+    }));
+    FreshCadenza.createMetaTask("Query service_manifest", () => ({
+      rows: [
+        {
+          service_instance_id: "runner-1",
+          manifest: {
+            serviceName: "ScheduledRunnerService",
+            serviceInstanceId: "runner-1",
+            revision: 1,
+            manifestHash: "runner-manifest-v1",
+            publishedAt: "2026-03-30T12:00:00.000Z",
+            tasks: [],
+            signals: [],
+            intents: [],
+            actors: [],
+            routines: [],
+            directionalTaskMaps: [],
+            signalToTaskMaps: [],
+            intentToTaskMaps: [],
+            actorTaskMaps: [],
+            taskToRoutineMaps: [],
+          },
+        },
+      ],
+    }));
+
+    FreshCadenzaDB.createCadenzaDBService();
+    FreshCadenza.run(
+      FreshCadenza.get("Ensure authority registry projection flow is registered")!,
+      {},
+    );
+
+    const requestTask = FreshCadenza.get("Request authority registry projection replay");
+    const executeTask = FreshCadenza.get("Execute authority registry projection replay");
+    const normalizeInstancesTask = FreshCadenza.get(
+      "Normalize projected authority service instances",
+    );
+    const normalizeTransportsTask = FreshCadenza.get(
+      "Normalize projected authority service instance transports",
+    );
+    const normalizeManifestsTask = FreshCadenza.get(
+      "Normalize projected authority service manifests",
+    );
+    const collectTask = FreshCadenza.get("Collect authority registry projection replay");
+    const projectTask = FreshCadenza.get("Project persisted authority registry state");
+
+    expect(requestTask).toBeTruthy();
+    expect(executeTask).toBeTruthy();
+    expect(normalizeInstancesTask).toBeTruthy();
+    expect(normalizeTransportsTask).toBeTruthy();
+    expect(normalizeManifestsTask).toBeTruthy();
+    expect(collectTask).toBeTruthy();
+    expect(projectTask).toBeTruthy();
+
+    const requestResult = (requestTask as any).taskFunction({
+      __reason: "test_projection_id_fallback",
+    }) as Record<string, unknown>;
+    const requestedProjectionId = requestResult.__projectionId as string;
+
+    const executeResult = (executeTask as any).taskFunction({
+      __reason: "test_projection_id_fallback",
+    }) as Record<string, unknown>;
+    expect(executeResult.__projectionId).toBe(requestedProjectionId);
+
+    const normalizedInstances = (normalizeInstancesTask as any).taskFunction({
+      rows: [{ uuid: "runner-1" }],
+    }) as Record<string, unknown>;
+    const normalizedTransports = (normalizeTransportsTask as any).taskFunction({
+      rows: [{ uuid: "transport-1", service_instance_id: "runner-1" }],
+    }) as Record<string, unknown>;
+    const normalizedManifests = (normalizeManifestsTask as any).taskFunction({
+      rows: [
+        {
+          service_instance_id: "runner-1",
+          manifest: {
+            serviceName: "ScheduledRunnerService",
+            serviceInstanceId: "runner-1",
+            revision: 1,
+            manifestHash: "runner-manifest-v1",
+            publishedAt: "2026-03-30T12:00:00.000Z",
+            tasks: [],
+            signals: [],
+            intents: [],
+            actors: [],
+            routines: [],
+            directionalTaskMaps: [],
+            signalToTaskMaps: [],
+            intentToTaskMaps: [],
+            actorTaskMaps: [],
+            taskToRoutineMaps: [],
+          },
+        },
+      ],
+    }) as Record<string, unknown>;
+
+    expect(normalizedInstances.__projectionId).toBe(requestedProjectionId);
+    expect(normalizedTransports.__projectionId).toBe(requestedProjectionId);
+    expect(normalizedManifests.__projectionId).toBe(requestedProjectionId);
+
+    expect((collectTask as any).taskFunction(normalizedInstances)).toBe(false);
+    expect((collectTask as any).taskFunction(normalizedTransports)).toBe(false);
+    const collected = (collectTask as any).taskFunction(
+      normalizedManifests,
+    ) as Record<string, unknown>;
+
+    expect(collected.__projectionId).toBe(requestedProjectionId);
+    expect(collected.serviceInstances).toEqual([{ uuid: "runner-1" }]);
+    expect(collected.serviceInstanceTransports).toEqual([
+      { uuid: "transport-1", service_instance_id: "runner-1" },
+    ]);
+    expect(collected.serviceManifests).toHaveLength(1);
+
+    const emittedSignals: Array<{ signal: string; payload: Record<string, unknown> }> = [];
+    const projected = (projectTask as any).taskFunction(
+      { __projectionId: requestedProjectionId },
+      (signal: string, payload: Record<string, unknown>) => {
+        emittedSignals.push({ signal, payload });
+      },
+    ) as Record<string, unknown>;
+
+    expect(projected.projectedServiceInstances).toBe(1);
+    expect(projected.projectedServiceInstanceTransports).toBe(1);
+    expect(projected.projectedServiceManifests).toBe(1);
+    expect(
+      emittedSignals.some(
+        ({ signal, payload }) =>
+          signal === "global.meta.service_instance.updated" &&
+          payload.serviceInstance?.uuid === "runner-1",
+      ),
+    ).toBe(true);
   });
 });
