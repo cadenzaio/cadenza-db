@@ -8,9 +8,12 @@ const META_AUTHORITY_RUNTIME_STATUS_REPLAY_REQUESTED =
   "meta.cadenza_db.authority_runtime_status.replay_requested";
 const META_AUTHORITY_RUNTIME_STATUS_HISTORY_SNAPSHOT_REQUESTED =
   "meta.cadenza_db.authority_runtime_status.history_snapshot_requested";
+const META_AUTHORITY_RUNTIME_STATUS_LEASE_UPSERT_REQUESTED =
+  "meta.cadenza_db.authority_runtime_status.lease_upsert_requested";
 const META_RUNTIME_STATUS_AUTHORITY_SYNC_REQUESTED_SIGNAL =
   "meta.service_registry.runtime_status_authority_sync_requested";
 const AUTHORITY_RUNTIME_STATUS_HISTORY_ENSURE_DELAYS_MS = [250, 1_500, 5_000];
+const AUTHORITY_RUNTIME_STATUS_LEASE_DURATION_MS = 45_000;
 
 interface AuthorityRuntimeStatusActorState {
   latestReport: AuthorityRuntimeStatusReport | null;
@@ -109,6 +112,99 @@ function buildHealthSnapshotInsertContext(
   };
 }
 
+function resolveLeaseStatus(
+  report: AuthorityRuntimeStatusReport,
+): "active" | "non_responsive" | "inactive" {
+  if (report.isNonResponsive) {
+    return "non_responsive";
+  }
+
+  if (!report.isActive) {
+    return "inactive";
+  }
+
+  return "active";
+}
+
+function buildLeaseUpsertContext(
+  report: AuthorityRuntimeStatusReport,
+  options?: {
+    status?: "active" | "non_responsive" | "inactive" | "deleted";
+    shutdownRequestedAt?: string | null;
+  },
+): Record<string, any> {
+  const status = options?.status ?? resolveLeaseStatus(report);
+  const reportedAt = report.reportedAt;
+  const observedTransportAt =
+    report.transportOrigin || report.transportId ? reportedAt : null;
+  const isReady =
+    status === "active" &&
+    report.acceptingWork === true &&
+    report.isBlocked !== true &&
+    (report.state === "healthy" || report.state === "degraded");
+  const readinessReason =
+    status === "deleted"
+      ? "deleted"
+      : status === "inactive"
+        ? options?.shutdownRequestedAt
+          ? "graceful_shutdown"
+          : "inactive"
+        : status === "non_responsive"
+          ? "non_responsive"
+          : report.isBlocked
+            ? "blocked"
+            : report.acceptingWork
+              ? "accepting_work"
+              : report.state;
+  const lastReadyAt = isReady ? reportedAt : null;
+  const shutdownRequestedAt = options?.shutdownRequestedAt ?? null;
+  const leaseExpiresAt =
+    status === "deleted" || status === "inactive"
+      ? reportedAt
+      : new Date(
+          new Date(reportedAt).getTime() + AUTHORITY_RUNTIME_STATUS_LEASE_DURATION_MS,
+        ).toISOString();
+
+  const row = {
+    service_instance_id: report.serviceInstanceId,
+    status,
+    is_ready: isReady,
+    readiness_reason: readinessReason,
+    lease_expires_at: leaseExpiresAt,
+    last_lease_renewed_at: reportedAt,
+    last_ready_at: lastReadyAt,
+    last_observed_transport_at: observedTransportAt,
+    shutdown_requested_at: shutdownRequestedAt,
+    modified: reportedAt,
+    deleted: status === "deleted",
+  };
+
+  return {
+    data: row,
+    queryData: {
+      data: row,
+      onConflict: {
+        target: ["service_instance_id"],
+        action: {
+          do: "update",
+          set: {
+            status: "excluded",
+            is_ready: "excluded",
+            readiness_reason: "excluded",
+            lease_expires_at: "excluded",
+            last_lease_renewed_at: "excluded",
+            last_ready_at: "excluded",
+            last_observed_transport_at: "excluded",
+            shutdown_requested_at: "excluded",
+            modified: "excluded",
+            deleted: "excluded",
+          },
+        },
+      },
+    },
+  };
+}
+
 function readServiceInstanceId(input: Record<string, any> | null | undefined): string {
   return String(
     input?.serviceInstanceId ??
@@ -169,6 +265,10 @@ export function registerAuthorityRuntimeStatusTasks(): void {
         applied: true,
       });
     }
+    Cadenza.emit(META_AUTHORITY_RUNTIME_STATUS_LEASE_UPSERT_REQUESTED, {
+      __authorityRuntimeStatusReport: report,
+      applied,
+    });
 
     return {
       applied,
@@ -248,11 +348,23 @@ export function registerAuthorityRuntimeStatusTasks(): void {
       return true;
     }
 
+    const localServiceInstanceQueryTask =
+      Cadenza.getLocalCadenzaDBQueryTask("service_instance");
     const localHealthSnapshotInsertTask =
       Cadenza.getLocalCadenzaDBInsertTask("service_instance_health_snapshot");
-    if (!localHealthSnapshotInsertTask) {
+    const localServiceInstanceLeaseInsertTask =
+      Cadenza.getLocalCadenzaDBInsertTask("service_instance_lease");
+    if (
+      !localServiceInstanceQueryTask ||
+      !localHealthSnapshotInsertTask ||
+      !localServiceInstanceLeaseInsertTask
+    ) {
       return false;
     }
+
+    const localServiceInstanceLeaseLookupTask = localServiceInstanceQueryTask.clone();
+    const localSelfServiceInstanceLeaseLookupTask =
+      localServiceInstanceQueryTask.clone();
 
     Cadenza.createMetaTask(
       "Prepare authority runtime status history snapshot insert",
@@ -307,6 +419,136 @@ export function registerAuthorityRuntimeStatusTasks(): void {
     )
       .doOn(META_RUNTIME_STATUS_AUTHORITY_SYNC_REQUESTED_SIGNAL)
       .then(localHealthSnapshotInsertTask);
+
+    Cadenza.createMetaTask(
+      "Prepare authority runtime status lease instance lookup",
+      (ctx: any) => {
+        const report = normalizeAuthorityRuntimeStatusReport(
+          (ctx?.__authorityRuntimeStatusReport ?? ctx) as Record<string, any>,
+        );
+        if (!report) {
+          return false;
+        }
+
+        return {
+          ...ctx,
+          __authorityRuntimeStatusReport: report,
+          queryData: {
+            filter: {
+              uuid: report.serviceInstanceId,
+              deleted: false,
+            },
+          },
+        };
+      },
+      "Loads the structural service_instance row before writing an authority-owned lease row.",
+      {
+        register: false,
+        isHidden: true,
+      },
+    )
+      .doOn(META_AUTHORITY_RUNTIME_STATUS_LEASE_UPSERT_REQUESTED)
+      .then(localServiceInstanceLeaseLookupTask);
+
+    Cadenza.createMetaTask(
+      "Prepare authority runtime status lease upsert",
+      (ctx: any) => {
+        const rows = Array.isArray(ctx?.rows) ? ctx.rows : [];
+        if (rows.length === 0) {
+          return false;
+        }
+
+        const report = normalizeAuthorityRuntimeStatusReport(
+          (ctx?.__authorityRuntimeStatusReport ?? ctx) as Record<string, any>,
+        );
+        if (!report) {
+          return false;
+        }
+
+        return buildLeaseUpsertContext(report);
+      },
+      "Builds the authority-owned service-instance lease row from the latest runtime-status report.",
+      {
+        register: false,
+        isHidden: true,
+      },
+    ).doAfter(localServiceInstanceLeaseLookupTask).then(
+      localServiceInstanceLeaseInsertTask,
+    );
+
+    Cadenza.createMetaTask(
+      "Prepare local authority runtime status lease instance lookup",
+      (ctx: any) => {
+        const report = normalizeAuthorityRuntimeStatusReport(ctx as Record<string, any>);
+        if (!report || report.serviceName !== "CadenzaDB") {
+          return false;
+        }
+
+        const localServiceInstanceId = String(
+          (Cadenza.serviceRegistry as any)?.serviceInstanceId ?? "",
+        ).trim();
+        if (
+          !localServiceInstanceId ||
+          report.serviceInstanceId !== localServiceInstanceId
+        ) {
+          return false;
+        }
+
+        return {
+          ...ctx,
+          __authorityRuntimeStatusReport: report,
+          queryData: {
+            filter: {
+              uuid: report.serviceInstanceId,
+              deleted: false,
+            },
+          },
+        };
+      },
+      "Loads the local CadenzaDB structural service_instance row before writing its authority lease row.",
+      {
+        register: false,
+        isHidden: true,
+      },
+    )
+      .doOn(META_RUNTIME_STATUS_AUTHORITY_SYNC_REQUESTED_SIGNAL)
+      .then(localSelfServiceInstanceLeaseLookupTask);
+
+    Cadenza.createMetaTask(
+      "Persist local authority runtime status lease",
+      (ctx: any) => {
+        const rows = Array.isArray(ctx?.rows) ? ctx.rows : [];
+        if (rows.length === 0) {
+          return false;
+        }
+
+        const report = normalizeAuthorityRuntimeStatusReport(
+          (ctx?.__authorityRuntimeStatusReport ?? ctx) as Record<string, any>,
+        );
+        if (!report || report.serviceName !== "CadenzaDB") {
+          return false;
+        }
+
+        const localServiceInstanceId = String(
+          (Cadenza.serviceRegistry as any)?.serviceInstanceId ?? "",
+        ).trim();
+        if (
+          !localServiceInstanceId ||
+          report.serviceInstanceId !== localServiceInstanceId
+        ) {
+          return false;
+        }
+
+        return buildLeaseUpsertContext(report);
+      },
+      "Persists local CadenzaDB lease freshness through the same authority lease path used for remote services.",
+      {
+        register: false,
+        isHidden: true,
+      },
+    ).doAfter(localSelfServiceInstanceLeaseLookupTask).then(
+      localServiceInstanceLeaseInsertTask,
+    );
 
     return true;
   };

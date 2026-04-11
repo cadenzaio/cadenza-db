@@ -13,6 +13,7 @@ It packages a ready-to-run Cadenza database service schema built with Cadenza pr
 3. Persist actor registration and actor-task mappings.
 4. Persist durable actor session state snapshots.
 5. Receive metadata updates through global meta signal contracts.
+6. Persist helper/global structural definitions, direct tool maps, and transitive tool-dependency snapshots.
 
 ## Actor MVP Coverage
 
@@ -37,6 +38,17 @@ This package does not:
 - define core primitive runtime semantics (owned by `cadenza`)
 - define distributed execution/transport behavior (owned by `cadenza-service`)
 - materialize full DB-native engine behavior at runtime (future `cadenza-engine` scope)
+
+## Layer-Scoped Tools Coverage
+
+Current helper/global persistence coverage includes:
+
+- helper definition registry (`helper`)
+- global definition registry (`global_registry`)
+- direct alias bindings between tasks/helpers and helpers/globals
+- materialized transitive closures for task/helper tool reachability
+
+This package owns the table shapes and materialization path, but not the runtime meaning of helper execution or global immutability.
 
 ## Operational Notes
 

@@ -46,9 +46,14 @@ const META_MANIFEST_ENTITY_PROJECTION_REQUESTED =
   "meta.cadenza_db.manifest_entity_projection_requested";
 const META_MANIFEST_ASSOCIATION_PROJECTION_REQUESTED =
   "meta.cadenza_db.manifest_association_projection_requested";
+const META_TOOL_DEPENDENCY_SNAPSHOT_REFRESH_REQUESTED =
+  "meta.cadenza_db.tool_dependency_snapshot_refresh_requested";
+const META_TOOL_DEPENDENCY_SNAPSHOT_REFRESH_EXECUTE =
+  "meta.cadenza_db.tool_dependency_snapshot_refresh_execute";
 const MANIFEST_ASSOCIATION_PROJECTION_DEBOUNCE_MS = 50;
 const MANIFEST_ASSOCIATION_PROJECTION_ACCUMULATOR_TTL_MS = 60000;
 const MANIFEST_ASSOCIATION_REPLAY_FLUSH_DELAYS_MS = [250, 1500, 5000] as const;
+const TOOL_DEPENDENCY_SNAPSHOT_REFRESH_DEBOUNCE_MS = 50;
 const STRUCTURAL_NAME_MAX_LENGTH = 255;
 const SERVICE_INSTANCE_ORIGIN_CANONICALIZATION_STARTUP_DELAYS_MS = [
   250,
@@ -86,6 +91,7 @@ const authorityRegistryProjectionAccumulator = new Map<
   {
     updatedAt: number;
     serviceInstances?: Array<Record<string, unknown>>;
+    serviceInstanceLeases?: Array<Record<string, unknown>>;
     serviceInstanceTransports?: Array<Record<string, unknown>>;
     serviceManifests?: Array<Record<string, unknown>>;
   }
@@ -97,6 +103,7 @@ const authorityRegistryProjectionPayloads = new Map<
   {
     updatedAt: number;
     serviceInstances: Array<Record<string, unknown>>;
+    serviceInstanceLeases: Array<Record<string, unknown>>;
     serviceInstanceTransports: Array<Record<string, unknown>>;
     serviceManifests: Array<Record<string, unknown>>;
   }
@@ -106,7 +113,23 @@ type ManifestAssociationEntityKind =
   | "signal"
   | "intent"
   | "actor"
-  | "routine";
+  | "routine"
+  | "helper"
+  | "global";
+
+type ToolDependencyKind = "helper" | "global";
+
+type ToolDependencyGraph = {
+  taskToHelperMaps: Array<Record<string, unknown>>;
+  helperToHelperMaps: Array<Record<string, unknown>>;
+  taskToGlobalMaps: Array<Record<string, unknown>>;
+  helperToGlobalMaps: Array<Record<string, unknown>>;
+};
+
+type ToolDependencySnapshotRows = {
+  taskSnapshots: Array<Record<string, unknown>>;
+  helperSnapshots: Array<Record<string, unknown>>;
+};
 const manifestAssociationProjectionAccumulator = new Map<
   string,
   {
@@ -365,6 +388,12 @@ function collectManifestAssociationPendingEntityKinds(
   if (normalizeRowArray(payload.__projectedRoutines).length > 0) {
     kinds.add("routine");
   }
+  if (normalizeRowArray(payload.__projectedHelpers).length > 0) {
+    kinds.add("helper");
+  }
+  if (normalizeRowArray(payload.__projectedGlobals).length > 0) {
+    kinds.add("global");
+  }
 
   return kinds;
 }
@@ -377,7 +406,11 @@ function queueManifestAssociationProjection(
     normalizeRowArray(payload.__projectedSignalToTaskMaps).length > 0 ||
     normalizeRowArray(payload.__projectedIntentToTaskMaps).length > 0 ||
     normalizeRowArray(payload.__projectedActorTaskMaps).length > 0 ||
-    normalizeRowArray(payload.__projectedTaskToRoutineMaps).length > 0;
+    normalizeRowArray(payload.__projectedTaskToRoutineMaps).length > 0 ||
+    normalizeRowArray(payload.__projectedTaskToHelperMaps).length > 0 ||
+    normalizeRowArray(payload.__projectedHelperToHelperMaps).length > 0 ||
+    normalizeRowArray(payload.__projectedTaskToGlobalMaps).length > 0 ||
+    normalizeRowArray(payload.__projectedHelperToGlobalMaps).length > 0;
 
   if (!hasAssociations) {
     return false;
@@ -577,6 +610,382 @@ function pickManifestTaskProjectionRow(
   };
 }
 
+function pickManifestHelperProjectionRow(
+  row: Record<string, unknown>,
+): Record<string, unknown> {
+  const version = readInteger(row.version);
+  return {
+    name: readString(row.name),
+    description: readString(row.description),
+    service_name:
+      readString(row.service_name) || readString(row.serviceName) || null,
+    is_meta: readBoolean(row.is_meta ?? row.isMeta),
+    handler_source:
+      readString(row.handler_source) || readString(row.handlerSource) || "",
+    language: readString(row.language) || "js",
+    version: version ?? 1,
+    deleted: false,
+  };
+}
+
+function pickManifestGlobalProjectionRow(
+  row: Record<string, unknown>,
+): Record<string, unknown> {
+  const version = readInteger(row.version);
+  return {
+    name: readString(row.name),
+    description: readString(row.description),
+    service_name:
+      readString(row.service_name) || readString(row.serviceName) || null,
+    is_meta: readBoolean(row.is_meta ?? row.isMeta),
+    value: row.value ?? null,
+    version: version ?? 1,
+    deleted: false,
+  };
+}
+
+function buildToolDependencyGraph(input: {
+  taskToHelperMaps?: unknown;
+  helperToHelperMaps?: unknown;
+  taskToGlobalMaps?: unknown;
+  helperToGlobalMaps?: unknown;
+}): ToolDependencyGraph {
+  return {
+    taskToHelperMaps: normalizeRowArray(input.taskToHelperMaps).map((row) => ({
+      task_name: readString(row.task_name) || readString(row.taskName),
+      task_version: readInteger(row.task_version ?? row.taskVersion) ?? 1,
+      service_name:
+        readString(row.service_name) || readString(row.serviceName) || null,
+      alias: readString(row.alias),
+      helper_name: readString(row.helper_name) || readString(row.helperName),
+      helper_version: readInteger(row.helper_version ?? row.helperVersion) ?? 1,
+      deleted: readBoolean(row.deleted),
+    })),
+    helperToHelperMaps: normalizeRowArray(input.helperToHelperMaps).map((row) => ({
+      helper_name: readString(row.helper_name) || readString(row.helperName),
+      helper_version: readInteger(row.helper_version ?? row.helperVersion) ?? 1,
+      service_name:
+        readString(row.service_name) || readString(row.serviceName) || null,
+      alias: readString(row.alias),
+      dependency_helper_name:
+        readString(row.dependency_helper_name) ||
+        readString(row.dependencyHelperName),
+      dependency_helper_version:
+        readInteger(
+          row.dependency_helper_version ?? row.dependencyHelperVersion,
+        ) ?? 1,
+      deleted: readBoolean(row.deleted),
+    })),
+    taskToGlobalMaps: normalizeRowArray(input.taskToGlobalMaps).map((row) => ({
+      task_name: readString(row.task_name) || readString(row.taskName),
+      task_version: readInteger(row.task_version ?? row.taskVersion) ?? 1,
+      service_name:
+        readString(row.service_name) || readString(row.serviceName) || null,
+      alias: readString(row.alias),
+      global_name: readString(row.global_name) || readString(row.globalName),
+      global_version: readInteger(row.global_version ?? row.globalVersion) ?? 1,
+      deleted: readBoolean(row.deleted),
+    })),
+    helperToGlobalMaps: normalizeRowArray(input.helperToGlobalMaps).map((row) => ({
+      helper_name: readString(row.helper_name) || readString(row.helperName),
+      helper_version: readInteger(row.helper_version ?? row.helperVersion) ?? 1,
+      service_name:
+        readString(row.service_name) || readString(row.serviceName) || null,
+      alias: readString(row.alias),
+      global_name: readString(row.global_name) || readString(row.globalName),
+      global_version: readInteger(row.global_version ?? row.globalVersion) ?? 1,
+      deleted: readBoolean(row.deleted),
+    })),
+  };
+}
+
+function computeToolDependencySnapshotRows(
+  input: ToolDependencyGraph,
+): ToolDependencySnapshotRows {
+  const taskSnapshots: Array<Record<string, unknown>> = [];
+  const helperSnapshots: Array<Record<string, unknown>> = [];
+
+  const activeTaskToHelperMaps = input.taskToHelperMaps.filter(
+    (row) => row.deleted !== true,
+  );
+  const activeHelperToHelperMaps = input.helperToHelperMaps.filter(
+    (row) => row.deleted !== true,
+  );
+  const activeTaskToGlobalMaps = input.taskToGlobalMaps.filter(
+    (row) => row.deleted !== true,
+  );
+  const activeHelperToGlobalMaps = input.helperToGlobalMaps.filter(
+    (row) => row.deleted !== true,
+  );
+
+  const helperToHelperByOwner = new Map<string, Array<Record<string, unknown>>>();
+  const helperToGlobalByOwner = new Map<string, Array<Record<string, unknown>>>();
+
+  const buildHelperOwnerKey = (
+    serviceName: string,
+    helperName: string,
+    helperVersion: number,
+  ) => `${serviceName}|${helperName}|${helperVersion}`;
+
+  for (const row of activeHelperToHelperMaps) {
+    const key = buildHelperOwnerKey(
+      readString(row.service_name),
+      readString(row.helper_name),
+      readInteger(row.helper_version) ?? 1,
+    );
+    const current = helperToHelperByOwner.get(key) ?? [];
+    current.push(row);
+    helperToHelperByOwner.set(key, current);
+  }
+
+  for (const row of activeHelperToGlobalMaps) {
+    const key = buildHelperOwnerKey(
+      readString(row.service_name),
+      readString(row.helper_name),
+      readInteger(row.helper_version) ?? 1,
+    );
+    const current = helperToGlobalByOwner.get(key) ?? [];
+    current.push(row);
+    helperToGlobalByOwner.set(key, current);
+  }
+
+  const appendHelperSnapshots = (
+    owner: {
+      serviceName: string;
+      helperName: string;
+      helperVersion: number;
+    },
+    into: Array<Record<string, unknown>>,
+    options?: {
+      aliasPrefix?: string;
+      startingDepth?: number;
+      visited?: Set<string>;
+    },
+  ) => {
+    const ownerKey = buildHelperOwnerKey(
+      owner.serviceName,
+      owner.helperName,
+      owner.helperVersion,
+    );
+    const aliasPrefix = readString(options?.aliasPrefix);
+    const startingDepth = options?.startingDepth ?? 1;
+    const visited = new Set(options?.visited ?? []);
+    if (visited.has(ownerKey)) {
+      return;
+    }
+    visited.add(ownerKey);
+
+    const helperChildren = helperToHelperByOwner.get(ownerKey) ?? [];
+    for (const child of helperChildren) {
+      const alias = readString(child.alias);
+      const dependencyHelperName = readString(child.dependency_helper_name);
+      const dependencyHelperVersion =
+        readInteger(child.dependency_helper_version) ?? 1;
+      const fullAlias = aliasPrefix ? `${aliasPrefix}.${alias}` : alias;
+      if (!fullAlias || !dependencyHelperName) {
+        continue;
+      }
+
+      into.push({
+        helper_name: owner.helperName,
+        helper_version: owner.helperVersion,
+        service_name: owner.serviceName,
+        alias: fullAlias,
+        dependency_kind: "helper",
+        dependency_name: dependencyHelperName,
+        dependency_version: dependencyHelperVersion,
+        depth: startingDepth,
+        deleted: false,
+      });
+
+      appendHelperSnapshots(
+        {
+          serviceName: owner.serviceName,
+          helperName: dependencyHelperName,
+          helperVersion: dependencyHelperVersion,
+        },
+        into,
+        {
+          aliasPrefix: fullAlias,
+          startingDepth: startingDepth + 1,
+          visited,
+        },
+      );
+    }
+
+    const globalChildren = helperToGlobalByOwner.get(ownerKey) ?? [];
+    for (const child of globalChildren) {
+      const alias = readString(child.alias);
+      const globalName = readString(child.global_name);
+      const globalVersion = readInteger(child.global_version) ?? 1;
+      const fullAlias = aliasPrefix ? `${aliasPrefix}.${alias}` : alias;
+      if (!fullAlias || !globalName) {
+        continue;
+      }
+
+      into.push({
+        helper_name: owner.helperName,
+        helper_version: owner.helperVersion,
+        service_name: owner.serviceName,
+        alias: fullAlias,
+        dependency_kind: "global",
+        dependency_name: globalName,
+        dependency_version: globalVersion,
+        depth: startingDepth,
+        deleted: false,
+      });
+    }
+  };
+
+  for (const row of activeTaskToHelperMaps) {
+    const taskName = readString(row.task_name);
+    const taskVersion = readInteger(row.task_version) ?? 1;
+    const serviceName = readString(row.service_name);
+    const alias = readString(row.alias);
+    const helperName = readString(row.helper_name);
+    const helperVersion = readInteger(row.helper_version) ?? 1;
+    if (!taskName || !serviceName || !alias || !helperName) {
+      continue;
+    }
+
+    taskSnapshots.push({
+      task_name: taskName,
+      task_version: taskVersion,
+      service_name: serviceName,
+      alias,
+      dependency_kind: "helper",
+      dependency_name: helperName,
+      dependency_version: helperVersion,
+      depth: 1,
+      deleted: false,
+    });
+
+    const helperClosureRows: Array<Record<string, unknown>> = [];
+    appendHelperSnapshots(
+      {
+        serviceName,
+        helperName,
+        helperVersion,
+      },
+      helperClosureRows,
+      {
+        aliasPrefix: alias,
+        startingDepth: 2,
+      },
+    );
+
+    for (const snapshotRow of helperClosureRows) {
+      taskSnapshots.push({
+        task_name: taskName,
+        task_version: taskVersion,
+        service_name: serviceName,
+        alias: readString(snapshotRow.alias),
+        dependency_kind: readString(snapshotRow.dependency_kind),
+        dependency_name: readString(snapshotRow.dependency_name),
+        dependency_version: readInteger(snapshotRow.dependency_version) ?? 1,
+        depth: readInteger(snapshotRow.depth) ?? 2,
+        deleted: false,
+      });
+    }
+  }
+
+  for (const row of activeTaskToGlobalMaps) {
+    const taskName = readString(row.task_name);
+    const taskVersion = readInteger(row.task_version) ?? 1;
+    const serviceName = readString(row.service_name);
+    const alias = readString(row.alias);
+    const globalName = readString(row.global_name);
+    const globalVersion = readInteger(row.global_version) ?? 1;
+    if (!taskName || !serviceName || !alias || !globalName) {
+      continue;
+    }
+
+    taskSnapshots.push({
+      task_name: taskName,
+      task_version: taskVersion,
+      service_name: serviceName,
+      alias,
+      dependency_kind: "global",
+      dependency_name: globalName,
+      dependency_version: globalVersion,
+      depth: 1,
+      deleted: false,
+    });
+  }
+
+  const helperOwners = new Map<
+    string,
+    {
+      serviceName: string;
+      helperName: string;
+      helperVersion: number;
+    }
+  >();
+
+  for (const row of [...activeHelperToHelperMaps, ...activeHelperToGlobalMaps]) {
+    const serviceName = readString(row.service_name);
+    const helperName = readString(row.helper_name);
+    const helperVersion = readInteger(row.helper_version) ?? 1;
+    if (!serviceName || !helperName) {
+      continue;
+    }
+    helperOwners.set(
+      buildHelperOwnerKey(serviceName, helperName, helperVersion),
+      {
+        serviceName,
+        helperName,
+        helperVersion,
+      },
+    );
+  }
+
+  for (const owner of helperOwners.values()) {
+    appendHelperSnapshots(owner, helperSnapshots);
+  }
+
+  const dedupeRows = (
+    rows: Array<Record<string, unknown>>,
+    keyBuilder: (row: Record<string, unknown>) => string,
+  ) => {
+    const deduped = new Map<string, Record<string, unknown>>();
+    for (const row of rows) {
+      deduped.set(keyBuilder(row), row);
+    }
+    return Array.from(deduped.values());
+  };
+
+  return {
+    taskSnapshots: dedupeRows(
+      taskSnapshots,
+      (row) =>
+        [
+          readString(row.task_name),
+          readInteger(row.task_version) ?? 1,
+          readString(row.service_name),
+          readString(row.alias),
+          readString(row.dependency_kind),
+          readString(row.dependency_name),
+          readInteger(row.dependency_version) ?? 1,
+          readInteger(row.depth) ?? 1,
+        ].join("|"),
+    ),
+    helperSnapshots: dedupeRows(
+      helperSnapshots,
+      (row) =>
+        [
+          readString(row.helper_name),
+          readInteger(row.helper_version) ?? 1,
+          readString(row.service_name),
+          readString(row.alias),
+          readString(row.dependency_kind),
+          readString(row.dependency_name),
+          readInteger(row.dependency_version) ?? 1,
+          readInteger(row.depth) ?? 1,
+        ].join("|"),
+    ),
+  };
+}
+
 function resolveServiceManifestSnapshotFromContext(
   value: unknown,
 ): ReturnType<typeof normalizeServiceManifestSnapshot> {
@@ -621,11 +1030,17 @@ type ProjectedManifestStructuralRows = {
   intents: Array<Record<string, unknown>>;
   actors: Array<Record<string, unknown>>;
   routines: Array<Record<string, unknown>>;
+  helpers: Array<Record<string, unknown>>;
+  globals: Array<Record<string, unknown>>;
   directionalTaskMaps: Array<Record<string, unknown>>;
   signalToTaskMaps: Array<Record<string, unknown>>;
   intentToTaskMaps: Array<Record<string, unknown>>;
   actorTaskMaps: Array<Record<string, unknown>>;
   taskToRoutineMaps: Array<Record<string, unknown>>;
+  taskToHelperMaps: Array<Record<string, unknown>>;
+  helperToHelperMaps: Array<Record<string, unknown>>;
+  taskToGlobalMaps: Array<Record<string, unknown>>;
+  helperToGlobalMaps: Array<Record<string, unknown>>;
 };
 
 function emitManifestStructuralProjectionRequests(
@@ -648,7 +1063,9 @@ function emitManifestStructuralProjectionRequests(
     projectedRows.signals.length > 0 ||
     projectedRows.intents.length > 0 ||
     projectedRows.actors.length > 0 ||
-    projectedRows.routines.length > 0;
+    projectedRows.routines.length > 0 ||
+    projectedRows.helpers.length > 0 ||
+    projectedRows.globals.length > 0;
 
   logLocalSyncDebug("manifest_structural_projection_requested", {
     serviceName: input.serviceName ?? null,
@@ -657,11 +1074,17 @@ function emitManifestStructuralProjectionRequests(
     intentCount: projectedRows.intents.length,
     actorCount: projectedRows.actors.length,
     routineCount: projectedRows.routines.length,
+    helperCount: projectedRows.helpers.length,
+    globalCount: projectedRows.globals.length,
     directionalTaskMapCount: projectedRows.directionalTaskMaps.length,
     signalToTaskMapCount: projectedRows.signalToTaskMaps.length,
     intentToTaskMapCount: projectedRows.intentToTaskMaps.length,
     actorTaskMapCount: projectedRows.actorTaskMaps.length,
     taskToRoutineMapCount: projectedRows.taskToRoutineMaps.length,
+    taskToHelperMapCount: projectedRows.taskToHelperMaps.length,
+    helperToHelperMapCount: projectedRows.helperToHelperMaps.length,
+    taskToGlobalMapCount: projectedRows.taskToGlobalMaps.length,
+    helperToGlobalMapCount: projectedRows.helperToGlobalMaps.length,
     queuedAssociationProjection,
   });
 
@@ -671,6 +1094,8 @@ function emitManifestStructuralProjectionRequests(
     __projectedIntents: projectedRows.intents,
     __projectedActors: projectedRows.actors,
     __projectedRoutines: projectedRows.routines,
+    __projectedHelpers: projectedRows.helpers,
+    __projectedGlobals: projectedRows.globals,
     ...associationPayload,
   });
 
@@ -741,55 +1166,67 @@ export function collectProjectedManifestStructuralRowsFromManifestRows(input: {
     Array.from(latestSnapshotsByService.values()).sort((left, right) =>
       left.serviceName.localeCompare(right.serviceName),
     ),
-  );
+  ) as Record<string, Array<Record<string, unknown>>>;
 
   return {
-    tasks: (exploded.tasks as Array<Record<string, unknown>>).map((row) =>
+    tasks: (exploded.tasks ?? []).map((row) =>
       pickManifestTaskProjectionRow(row),
     ),
-    signals: (exploded.signals as Array<Record<string, unknown>>).map((row) => ({
+    signals: (exploded.signals ?? []).map((row) => ({
       ...row,
       deleted: false,
     })),
-    intents: (exploded.intents as Array<Record<string, unknown>>).map((row) => ({
+    intents: (exploded.intents ?? []).map((row) => ({
       ...row,
       deleted: false,
     })),
-    actors: (exploded.actors as Array<Record<string, unknown>>).map((row) => ({
+    actors: (exploded.actors ?? []).map((row) => ({
       ...row,
       deleted: false,
     })),
-    routines: (exploded.routines as Array<Record<string, unknown>>).map((row) => ({
+    routines: (exploded.routines ?? []).map((row) => ({
       ...row,
       deleted: false,
     })),
-    directionalTaskMaps: (
-      exploded.directionalTaskMaps as Array<Record<string, unknown>>
-    ).map((row) => ({
+    helpers: (exploded.helpers ?? []).map((row) =>
+      pickManifestHelperProjectionRow(row),
+    ),
+    globals: (exploded.globals ?? []).map((row) =>
+      pickManifestGlobalProjectionRow(row),
+    ),
+    directionalTaskMaps: (exploded.directionalTaskMaps ?? []).map((row) => ({
       ...row,
       deleted: false,
     })),
-    signalToTaskMaps: (
-      exploded.signalToTaskMaps as Array<Record<string, unknown>>
-    ).map((row) => ({
+    signalToTaskMaps: (exploded.signalToTaskMaps ?? []).map((row) => ({
       ...row,
       deleted: false,
     })),
-    intentToTaskMaps: (
-      exploded.intentToTaskMaps as Array<Record<string, unknown>>
-    ).map((row) => ({
+    intentToTaskMaps: (exploded.intentToTaskMaps ?? []).map((row) => ({
       ...row,
       deleted: false,
     })),
-    actorTaskMaps: (
-      exploded.actorTaskMaps as Array<Record<string, unknown>>
-    ).map((row) => ({
+    actorTaskMaps: (exploded.actorTaskMaps ?? []).map((row) => ({
       ...row,
       deleted: false,
     })),
-    taskToRoutineMaps: (
-      exploded.taskToRoutineMaps as Array<Record<string, unknown>>
-    ).map((row) => ({
+    taskToRoutineMaps: (exploded.taskToRoutineMaps ?? []).map((row) => ({
+      ...row,
+      deleted: false,
+    })),
+    taskToHelperMaps: (exploded.taskToHelperMaps ?? []).map((row) => ({
+      ...row,
+      deleted: false,
+    })),
+    helperToHelperMaps: (exploded.helperToHelperMaps ?? []).map((row) => ({
+      ...row,
+      deleted: false,
+    })),
+    taskToGlobalMaps: (exploded.taskToGlobalMaps ?? []).map((row) => ({
+      ...row,
+      deleted: false,
+    })),
+    helperToGlobalMaps: (exploded.helperToGlobalMaps ?? []).map((row) => ({
       ...row,
       deleted: false,
     })),
@@ -816,6 +1253,10 @@ function buildManifestAssociationProjectionPayload(input: {
     __projectedIntentToTaskMaps: input.projectedRows.intentToTaskMaps,
     __projectedActorTaskMaps: input.projectedRows.actorTaskMaps,
     __projectedTaskToRoutineMaps: input.projectedRows.taskToRoutineMaps,
+    __projectedTaskToHelperMaps: input.projectedRows.taskToHelperMaps,
+    __projectedHelperToHelperMaps: input.projectedRows.helperToHelperMaps,
+    __projectedTaskToGlobalMaps: input.projectedRows.taskToGlobalMaps,
+    __projectedHelperToGlobalMaps: input.projectedRows.helperToGlobalMaps,
   } satisfies Record<string, unknown>;
 }
 
@@ -878,6 +1319,9 @@ function buildInsertTriggerWithOnConflictDoNothing(
 
 export function resolveLocalServiceRegistrySyncTasks() {
   const queryServiceInstanceTask = resolveLocalSyncQueryTask("service_instance");
+  const queryServiceInstanceLeaseTask = resolveLocalSyncQueryTask(
+    "service_instance_lease",
+  );
   const queryServiceInstanceTransportTask = resolveLocalSyncQueryTask(
     "service_instance_transport",
   );
@@ -895,9 +1339,110 @@ export function resolveLocalServiceRegistrySyncTasks() {
 
   return {
     queryServiceInstanceTask,
+    queryServiceInstanceLeaseTask,
     queryServiceInstanceTransportTask,
     queryServiceManifestTask,
   };
+}
+
+function normalizeServiceInstanceLeaseStatus(
+  value: unknown,
+): "active" | "non_responsive" | "inactive" | "deleted" | null {
+  const status = readString(value);
+  if (
+    status === "active" ||
+    status === "non_responsive" ||
+    status === "inactive" ||
+    status === "deleted"
+  ) {
+    return status;
+  }
+
+  return null;
+}
+
+function overlayServiceInstanceRowsWithLeases(
+  serviceInstanceRows: Array<Record<string, unknown>>,
+  serviceInstanceLeaseRows: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  if (serviceInstanceLeaseRows.length === 0) {
+    return serviceInstanceRows;
+  }
+
+  const leasesByInstanceId = new Map<string, Record<string, unknown>>();
+  for (const row of serviceInstanceLeaseRows) {
+    const serviceInstanceId = readString(
+      row.service_instance_id ?? row.serviceInstanceId,
+    );
+    if (!serviceInstanceId) {
+      continue;
+    }
+
+    leasesByInstanceId.set(serviceInstanceId, row);
+  }
+
+  return serviceInstanceRows.map((row) => {
+    const serviceInstanceId = readString(row.uuid);
+    const leaseRow = serviceInstanceId
+      ? leasesByInstanceId.get(serviceInstanceId)
+      : undefined;
+    if (!leaseRow) {
+      return row;
+    }
+
+    const leaseStatus = normalizeServiceInstanceLeaseStatus(
+      leaseRow.status ?? leaseRow.lease_status ?? leaseRow.leaseStatus,
+    );
+
+    return {
+      ...row,
+      lease_status: leaseStatus ?? undefined,
+      is_ready: readBoolean(leaseRow.is_ready ?? leaseRow.isReady),
+      readiness_reason:
+        readString(
+          leaseRow.readiness_reason ?? leaseRow.readinessReason,
+        ) || null,
+      lease_expires_at:
+        readString(
+          leaseRow.lease_expires_at ?? leaseRow.leaseExpiresAt,
+        ) || null,
+      last_lease_renewed_at:
+        readString(
+          leaseRow.last_lease_renewed_at ?? leaseRow.lastLeaseRenewedAt,
+        ) || null,
+      last_ready_at:
+        readString(leaseRow.last_ready_at ?? leaseRow.lastReadyAt) || null,
+      last_observed_transport_at:
+        readString(
+          leaseRow.last_observed_transport_at ??
+            leaseRow.lastObservedTransportAt,
+        ) || null,
+      shutdown_requested_at:
+        readString(
+          leaseRow.shutdown_requested_at ?? leaseRow.shutdownRequestedAt,
+        ) || null,
+      is_active:
+        leaseStatus === "active"
+          ? true
+          : leaseStatus === "non_responsive" ||
+              leaseStatus === "inactive" ||
+              leaseStatus === "deleted"
+            ? false
+            : row.is_active,
+      is_non_responsive:
+        leaseStatus === "non_responsive"
+          ? true
+          : leaseStatus === "active" ||
+              leaseStatus === "inactive" ||
+              leaseStatus === "deleted"
+            ? false
+            : row.is_non_responsive,
+      deleted:
+        leaseStatus === "deleted"
+          ? true
+          : Boolean(row.deleted ?? false),
+    };
+  });
 }
 
 export default class CadenzaDB {
@@ -919,12 +1464,15 @@ export default class CadenzaDB {
       Cadenza.log("Starting throttle sync...");
       const {
         queryServiceInstanceTask,
+        queryServiceInstanceLeaseTask,
         queryServiceInstanceTransportTask,
         queryServiceManifestTask,
       } = resolveLocalServiceRegistrySyncTasks();
 
       logLocalSyncDebug("start_throttle_sync", {
         queryServiceInstanceTask: queryServiceInstanceTask.name,
+        queryServiceInstanceLeaseTask:
+          queryServiceInstanceLeaseTask?.name ?? null,
         queryServiceInstanceTransportTask: queryServiceInstanceTransportTask.name,
         queryServiceManifestTask: queryServiceManifestTask.name,
       });
@@ -945,7 +1493,7 @@ export default class CadenzaDB {
     Cadenza.createMetaDatabaseService(
       "CadenzaDB",
       {
-        version: 5,
+        version: 7,
         migrationPolicy: {
           adoptExistingVersion: 1,
           allowDestructive: true,
@@ -1078,6 +1626,647 @@ export default class CadenzaDB {
               {
                 kind: "sql",
                 sql: `ALTER TABLE routine ALTER COLUMN name TYPE VARCHAR(${STRUCTURAL_NAME_MAX_LENGTH});`,
+              },
+            ],
+          },
+          {
+            version: 6,
+            name: "tool-definitions-and-dependency-snapshots",
+            steps: [
+              {
+                kind: "createTable",
+                table: "helper",
+                definition: {
+                  fields: {
+                    name: {
+                      type: "varchar",
+                      required: true,
+                      constraints: {
+                        maxLength: STRUCTURAL_NAME_MAX_LENGTH,
+                      },
+                    },
+                    description: {
+                      type: "text",
+                      default: "",
+                    },
+                    service_name: {
+                      type: "varchar",
+                      references: "service(name)",
+                      onDelete: "cascade",
+                      required: true,
+                    },
+                    is_meta: {
+                      type: "boolean",
+                      default: false,
+                    },
+                    handler_source: {
+                      type: "text",
+                      required: true,
+                    },
+                    language: {
+                      type: "varchar",
+                      default: "js",
+                      constraints: {
+                        maxLength: 16,
+                      },
+                    },
+                    version: {
+                      type: "int",
+                      default: 1,
+                    },
+                    created: {
+                      type: "timestamp",
+                      default: "now()",
+                    },
+                    deleted: {
+                      type: "boolean",
+                      default: false,
+                    },
+                  },
+                  primaryKey: ["name", "service_name", "version"],
+                  indexes: [["is_meta"]],
+                },
+              },
+              {
+                kind: "createTable",
+                table: "global_registry",
+                definition: {
+                  fields: {
+                    name: {
+                      type: "varchar",
+                      required: true,
+                      constraints: {
+                        maxLength: STRUCTURAL_NAME_MAX_LENGTH,
+                      },
+                    },
+                    description: {
+                      type: "text",
+                      default: "",
+                    },
+                    service_name: {
+                      type: "varchar",
+                      references: "service(name)",
+                      onDelete: "cascade",
+                      required: true,
+                    },
+                    is_meta: {
+                      type: "boolean",
+                      default: false,
+                    },
+                    value: {
+                      type: "jsonb",
+                      default: null,
+                    },
+                    version: {
+                      type: "int",
+                      default: 1,
+                    },
+                    created: {
+                      type: "timestamp",
+                      default: "now()",
+                    },
+                    deleted: {
+                      type: "boolean",
+                      default: false,
+                    },
+                  },
+                  primaryKey: ["name", "service_name", "version"],
+                  indexes: [["is_meta"]],
+                },
+              },
+              {
+                kind: "createTable",
+                table: "task_to_helper_map",
+                definition: {
+                  fields: {
+                    task_name: {
+                      type: "varchar",
+                      required: true,
+                    },
+                    task_version: {
+                      type: "int",
+                      default: 1,
+                    },
+                    service_name: {
+                      type: "varchar",
+                      references: "service(name)",
+                      onDelete: "cascade",
+                      required: true,
+                    },
+                    alias: {
+                      type: "varchar",
+                      required: true,
+                      constraints: {
+                        maxLength: STRUCTURAL_NAME_MAX_LENGTH,
+                      },
+                    },
+                    helper_name: {
+                      type: "varchar",
+                      required: true,
+                    },
+                    helper_version: {
+                      type: "int",
+                      default: 1,
+                    },
+                    created: {
+                      type: "timestamp",
+                      default: "now()",
+                    },
+                    deleted: {
+                      type: "boolean",
+                      default: false,
+                    },
+                  },
+                  primaryKey: [
+                    "task_name",
+                    "task_version",
+                    "service_name",
+                    "alias",
+                    "helper_name",
+                    "helper_version",
+                  ],
+                  foreignKeys: [
+                    {
+                      tableName: "task",
+                      fields: ["task_name", "task_version", "service_name"],
+                      referenceFields: ["name", "version", "service_name"],
+                    },
+                    {
+                      tableName: "helper",
+                      fields: ["helper_name", "helper_version", "service_name"],
+                      referenceFields: ["name", "version", "service_name"],
+                    },
+                  ],
+                },
+              },
+              {
+                kind: "createTable",
+                table: "helper_to_helper_map",
+                definition: {
+                  fields: {
+                    helper_name: {
+                      type: "varchar",
+                      required: true,
+                    },
+                    helper_version: {
+                      type: "int",
+                      default: 1,
+                    },
+                    service_name: {
+                      type: "varchar",
+                      references: "service(name)",
+                      onDelete: "cascade",
+                      required: true,
+                    },
+                    alias: {
+                      type: "varchar",
+                      required: true,
+                      constraints: {
+                        maxLength: STRUCTURAL_NAME_MAX_LENGTH,
+                      },
+                    },
+                    dependency_helper_name: {
+                      type: "varchar",
+                      required: true,
+                    },
+                    dependency_helper_version: {
+                      type: "int",
+                      default: 1,
+                    },
+                    created: {
+                      type: "timestamp",
+                      default: "now()",
+                    },
+                    deleted: {
+                      type: "boolean",
+                      default: false,
+                    },
+                  },
+                  primaryKey: [
+                    "helper_name",
+                    "helper_version",
+                    "service_name",
+                    "alias",
+                    "dependency_helper_name",
+                    "dependency_helper_version",
+                  ],
+                  foreignKeys: [
+                    {
+                      tableName: "helper",
+                      fields: ["helper_name", "helper_version", "service_name"],
+                      referenceFields: ["name", "version", "service_name"],
+                    },
+                    {
+                      tableName: "helper",
+                      fields: [
+                        "dependency_helper_name",
+                        "dependency_helper_version",
+                        "service_name",
+                      ],
+                      referenceFields: ["name", "version", "service_name"],
+                    },
+                  ],
+                },
+              },
+              {
+                kind: "createTable",
+                table: "task_to_global_map",
+                definition: {
+                  fields: {
+                    task_name: {
+                      type: "varchar",
+                      required: true,
+                    },
+                    task_version: {
+                      type: "int",
+                      default: 1,
+                    },
+                    service_name: {
+                      type: "varchar",
+                      references: "service(name)",
+                      onDelete: "cascade",
+                      required: true,
+                    },
+                    alias: {
+                      type: "varchar",
+                      required: true,
+                      constraints: {
+                        maxLength: STRUCTURAL_NAME_MAX_LENGTH,
+                      },
+                    },
+                    global_name: {
+                      type: "varchar",
+                      required: true,
+                    },
+                    global_version: {
+                      type: "int",
+                      default: 1,
+                    },
+                    created: {
+                      type: "timestamp",
+                      default: "now()",
+                    },
+                    deleted: {
+                      type: "boolean",
+                      default: false,
+                    },
+                  },
+                  primaryKey: [
+                    "task_name",
+                    "task_version",
+                    "service_name",
+                    "alias",
+                    "global_name",
+                    "global_version",
+                  ],
+                  foreignKeys: [
+                    {
+                      tableName: "task",
+                      fields: ["task_name", "task_version", "service_name"],
+                      referenceFields: ["name", "version", "service_name"],
+                    },
+                    {
+                      tableName: "global_registry",
+                      fields: ["global_name", "global_version", "service_name"],
+                      referenceFields: ["name", "version", "service_name"],
+                    },
+                  ],
+                },
+              },
+              {
+                kind: "createTable",
+                table: "helper_to_global_map",
+                definition: {
+                  fields: {
+                    helper_name: {
+                      type: "varchar",
+                      required: true,
+                    },
+                    helper_version: {
+                      type: "int",
+                      default: 1,
+                    },
+                    service_name: {
+                      type: "varchar",
+                      references: "service(name)",
+                      onDelete: "cascade",
+                      required: true,
+                    },
+                    alias: {
+                      type: "varchar",
+                      required: true,
+                      constraints: {
+                        maxLength: STRUCTURAL_NAME_MAX_LENGTH,
+                      },
+                    },
+                    global_name: {
+                      type: "varchar",
+                      required: true,
+                    },
+                    global_version: {
+                      type: "int",
+                      default: 1,
+                    },
+                    created: {
+                      type: "timestamp",
+                      default: "now()",
+                    },
+                    deleted: {
+                      type: "boolean",
+                      default: false,
+                    },
+                  },
+                  primaryKey: [
+                    "helper_name",
+                    "helper_version",
+                    "service_name",
+                    "alias",
+                    "global_name",
+                    "global_version",
+                  ],
+                  foreignKeys: [
+                    {
+                      tableName: "helper",
+                      fields: ["helper_name", "helper_version", "service_name"],
+                      referenceFields: ["name", "version", "service_name"],
+                    },
+                    {
+                      tableName: "global_registry",
+                      fields: ["global_name", "global_version", "service_name"],
+                      referenceFields: ["name", "version", "service_name"],
+                    },
+                  ],
+                },
+              },
+              {
+                kind: "createTable",
+                table: "task_tool_dependency_snapshot",
+                definition: {
+                  fields: {
+                    task_name: {
+                      type: "varchar",
+                      required: true,
+                    },
+                    task_version: {
+                      type: "int",
+                      default: 1,
+                    },
+                    service_name: {
+                      type: "varchar",
+                      references: "service(name)",
+                      onDelete: "cascade",
+                      required: true,
+                    },
+                    alias: {
+                      type: "varchar",
+                      required: true,
+                      constraints: {
+                        maxLength: STRUCTURAL_NAME_MAX_LENGTH,
+                      },
+                    },
+                    dependency_kind: {
+                      type: "varchar",
+                      required: true,
+                      constraints: {
+                        maxLength: 16,
+                      },
+                    },
+                    dependency_name: {
+                      type: "varchar",
+                      required: true,
+                    },
+                    dependency_version: {
+                      type: "int",
+                      default: 1,
+                    },
+                    depth: {
+                      type: "int",
+                      default: 1,
+                    },
+                    created: {
+                      type: "timestamp",
+                      default: "now()",
+                    },
+                    deleted: {
+                      type: "boolean",
+                      default: false,
+                    },
+                  },
+                  primaryKey: [
+                    "task_name",
+                    "task_version",
+                    "service_name",
+                    "alias",
+                    "dependency_kind",
+                    "dependency_name",
+                    "dependency_version",
+                    "depth",
+                  ],
+                  indexes: [["service_name", "dependency_kind", "depth"]],
+                },
+              },
+              {
+                kind: "createTable",
+                table: "helper_tool_dependency_snapshot",
+                definition: {
+                  fields: {
+                    helper_name: {
+                      type: "varchar",
+                      required: true,
+                    },
+                    helper_version: {
+                      type: "int",
+                      default: 1,
+                    },
+                    service_name: {
+                      type: "varchar",
+                      references: "service(name)",
+                      onDelete: "cascade",
+                      required: true,
+                    },
+                    alias: {
+                      type: "varchar",
+                      required: true,
+                      constraints: {
+                        maxLength: STRUCTURAL_NAME_MAX_LENGTH,
+                      },
+                    },
+                    dependency_kind: {
+                      type: "varchar",
+                      required: true,
+                      constraints: {
+                        maxLength: 16,
+                      },
+                    },
+                    dependency_name: {
+                      type: "varchar",
+                      required: true,
+                    },
+                    dependency_version: {
+                      type: "int",
+                      default: 1,
+                    },
+                    depth: {
+                      type: "int",
+                      default: 1,
+                    },
+                    created: {
+                      type: "timestamp",
+                      default: "now()",
+                    },
+                    deleted: {
+                      type: "boolean",
+                      default: false,
+                    },
+                  },
+                  primaryKey: [
+                    "helper_name",
+                    "helper_version",
+                    "service_name",
+                    "alias",
+                    "dependency_kind",
+                    "dependency_name",
+                    "dependency_version",
+                    "depth",
+                  ],
+                  indexes: [["service_name", "dependency_kind", "depth"]],
+                },
+              },
+            ],
+          },
+          {
+            version: 7,
+            name: "service-instance-leases",
+            steps: [
+              {
+                kind: "createTable",
+                table: "service_instance_lease",
+                definition: {
+                  fields: {
+                    service_instance_id: {
+                      type: "uuid",
+                      primary: true,
+                      references: "service_instance(uuid)",
+                      onDelete: "cascade",
+                      required: true,
+                    },
+                    status: {
+                      type: "varchar",
+                      required: true,
+                      default: "active",
+                      constraints: {
+                        oneOf: [
+                          "active",
+                          "non_responsive",
+                          "inactive",
+                          "deleted",
+                        ],
+                        maxLength: 32,
+                      },
+                    },
+                    is_ready: {
+                      type: "boolean",
+                      default: false,
+                    },
+                    readiness_reason: {
+                      type: "text",
+                      default: null,
+                    },
+                    lease_expires_at: {
+                      type: "timestamp",
+                      default: null,
+                    },
+                    last_lease_renewed_at: {
+                      type: "timestamp",
+                      default: null,
+                    },
+                    last_ready_at: {
+                      type: "timestamp",
+                      default: null,
+                    },
+                    last_observed_transport_at: {
+                      type: "timestamp",
+                      default: null,
+                    },
+                    shutdown_requested_at: {
+                      type: "timestamp",
+                      default: null,
+                    },
+                    created: {
+                      type: "timestamp",
+                      default: "now()",
+                    },
+                    modified: {
+                      type: "timestamp",
+                      default: "now()",
+                    },
+                    deleted: {
+                      type: "boolean",
+                      default: false,
+                    },
+                  },
+                  indexes: [
+                    ["status", "is_ready", "lease_expires_at"],
+                    ["lease_expires_at"],
+                  ],
+                },
+              },
+              {
+                kind: "sql",
+                sql: `
+                  INSERT INTO service_instance_lease (
+                    service_instance_id,
+                    status,
+                    is_ready,
+                    readiness_reason,
+                    lease_expires_at,
+                    last_lease_renewed_at,
+                    last_ready_at,
+                    last_observed_transport_at,
+                    shutdown_requested_at,
+                    created,
+                    modified,
+                    deleted
+                  )
+                  SELECT
+                    uuid,
+                    CASE
+                      WHEN deleted = true THEN 'deleted'
+                      WHEN is_non_responsive = true THEN 'non_responsive'
+                      WHEN is_active = true THEN 'active'
+                      ELSE 'inactive'
+                    END,
+                    CASE
+                      WHEN deleted = true OR is_blocked = true THEN false
+                      WHEN is_non_responsive = true THEN false
+                      WHEN is_active = true THEN true
+                      ELSE false
+                    END,
+                    CASE
+                      WHEN deleted = true THEN 'deleted'
+                      WHEN is_blocked = true THEN 'blocked'
+                      WHEN is_non_responsive = true THEN 'non_responsive'
+                      WHEN is_active = true THEN 'accepting_work'
+                      ELSE 'inactive'
+                    END,
+                    CASE
+                      WHEN last_active IS NOT NULL THEN last_active + INTERVAL '45 seconds'
+                      ELSE NULL
+                    END,
+                    last_active,
+                    CASE
+                      WHEN is_active = true AND deleted = false AND is_non_responsive = false AND is_blocked = false
+                        THEN last_active
+                      ELSE NULL
+                    END,
+                    last_active,
+                    NULL,
+                    created,
+                    modified,
+                    deleted
+                  FROM service_instance
+                  ON CONFLICT (service_instance_id) DO NOTHING;
+                `,
               },
             ],
           },
@@ -1798,6 +2987,481 @@ export default class CadenzaDB {
             ],
           },
 
+          helper: {
+            fields: {
+              name: {
+                type: "varchar",
+                required: true,
+                constraints: {
+                  maxLength: STRUCTURAL_NAME_MAX_LENGTH,
+                },
+              },
+              description: {
+                type: "text",
+                default: "",
+              },
+              service_name: {
+                type: "varchar",
+                references: "service(name)",
+                onDelete: "cascade",
+                required: true,
+              },
+              is_meta: {
+                type: "boolean",
+                default: false,
+              },
+              handler_source: {
+                type: "text",
+                required: true,
+              },
+              language: {
+                type: "varchar",
+                default: "js",
+                constraints: {
+                  maxLength: 16,
+                },
+              },
+              version: {
+                type: "int",
+                default: 1,
+              },
+              created: {
+                type: "timestamp",
+                default: "now()",
+              },
+              deleted: {
+                type: "boolean",
+                default: false,
+              },
+            },
+            primaryKey: ["name", "service_name", "version"],
+            indexes: [["is_meta"]],
+          },
+
+          global_registry: {
+            fields: {
+              name: {
+                type: "varchar",
+                required: true,
+                constraints: {
+                  maxLength: STRUCTURAL_NAME_MAX_LENGTH,
+                },
+              },
+              description: {
+                type: "text",
+                default: "",
+              },
+              service_name: {
+                type: "varchar",
+                references: "service(name)",
+                onDelete: "cascade",
+                required: true,
+              },
+              is_meta: {
+                type: "boolean",
+                default: false,
+              },
+              value: {
+                type: "jsonb",
+                default: null,
+              },
+              version: {
+                type: "int",
+                default: 1,
+              },
+              created: {
+                type: "timestamp",
+                default: "now()",
+              },
+              deleted: {
+                type: "boolean",
+                default: false,
+              },
+            },
+            primaryKey: ["name", "service_name", "version"],
+            indexes: [["is_meta"]],
+          },
+
+          task_to_helper_map: {
+            fields: {
+              task_name: {
+                type: "varchar",
+                required: true,
+              },
+              task_version: {
+                type: "int",
+                default: 1,
+              },
+              service_name: {
+                type: "varchar",
+                references: "service(name)",
+                onDelete: "cascade",
+                required: true,
+              },
+              alias: {
+                type: "varchar",
+                required: true,
+                constraints: {
+                  maxLength: STRUCTURAL_NAME_MAX_LENGTH,
+                },
+              },
+              helper_name: {
+                type: "varchar",
+                required: true,
+              },
+              helper_version: {
+                type: "int",
+                default: 1,
+              },
+              created: {
+                type: "timestamp",
+                default: "now()",
+              },
+              deleted: {
+                type: "boolean",
+                default: false,
+              },
+            },
+            primaryKey: [
+              "task_name",
+              "task_version",
+              "service_name",
+              "alias",
+              "helper_name",
+              "helper_version",
+            ],
+            foreignKeys: [
+              {
+                tableName: "task",
+                fields: ["task_name", "task_version", "service_name"],
+                referenceFields: ["name", "version", "service_name"],
+              },
+              {
+                tableName: "helper",
+                fields: ["helper_name", "helper_version", "service_name"],
+                referenceFields: ["name", "version", "service_name"],
+              },
+            ],
+          },
+
+          helper_to_helper_map: {
+            fields: {
+              helper_name: {
+                type: "varchar",
+                required: true,
+              },
+              helper_version: {
+                type: "int",
+                default: 1,
+              },
+              service_name: {
+                type: "varchar",
+                references: "service(name)",
+                onDelete: "cascade",
+                required: true,
+              },
+              alias: {
+                type: "varchar",
+                required: true,
+                constraints: {
+                  maxLength: STRUCTURAL_NAME_MAX_LENGTH,
+                },
+              },
+              dependency_helper_name: {
+                type: "varchar",
+                required: true,
+              },
+              dependency_helper_version: {
+                type: "int",
+                default: 1,
+              },
+              created: {
+                type: "timestamp",
+                default: "now()",
+              },
+              deleted: {
+                type: "boolean",
+                default: false,
+              },
+            },
+            primaryKey: [
+              "helper_name",
+              "helper_version",
+              "service_name",
+              "alias",
+              "dependency_helper_name",
+              "dependency_helper_version",
+            ],
+            foreignKeys: [
+              {
+                tableName: "helper",
+                fields: ["helper_name", "helper_version", "service_name"],
+                referenceFields: ["name", "version", "service_name"],
+              },
+              {
+                tableName: "helper",
+                fields: [
+                  "dependency_helper_name",
+                  "dependency_helper_version",
+                  "service_name",
+                ],
+                referenceFields: ["name", "version", "service_name"],
+              },
+            ],
+          },
+
+          task_to_global_map: {
+            fields: {
+              task_name: {
+                type: "varchar",
+                required: true,
+              },
+              task_version: {
+                type: "int",
+                default: 1,
+              },
+              service_name: {
+                type: "varchar",
+                references: "service(name)",
+                onDelete: "cascade",
+                required: true,
+              },
+              alias: {
+                type: "varchar",
+                required: true,
+                constraints: {
+                  maxLength: STRUCTURAL_NAME_MAX_LENGTH,
+                },
+              },
+              global_name: {
+                type: "varchar",
+                required: true,
+              },
+              global_version: {
+                type: "int",
+                default: 1,
+              },
+              created: {
+                type: "timestamp",
+                default: "now()",
+              },
+              deleted: {
+                type: "boolean",
+                default: false,
+              },
+            },
+            primaryKey: [
+              "task_name",
+              "task_version",
+              "service_name",
+              "alias",
+              "global_name",
+              "global_version",
+            ],
+            foreignKeys: [
+              {
+                tableName: "task",
+                fields: ["task_name", "task_version", "service_name"],
+                referenceFields: ["name", "version", "service_name"],
+              },
+              {
+                tableName: "global_registry",
+                fields: ["global_name", "global_version", "service_name"],
+                referenceFields: ["name", "version", "service_name"],
+              },
+            ],
+          },
+
+          helper_to_global_map: {
+            fields: {
+              helper_name: {
+                type: "varchar",
+                required: true,
+              },
+              helper_version: {
+                type: "int",
+                default: 1,
+              },
+              service_name: {
+                type: "varchar",
+                references: "service(name)",
+                onDelete: "cascade",
+                required: true,
+              },
+              alias: {
+                type: "varchar",
+                required: true,
+                constraints: {
+                  maxLength: STRUCTURAL_NAME_MAX_LENGTH,
+                },
+              },
+              global_name: {
+                type: "varchar",
+                required: true,
+              },
+              global_version: {
+                type: "int",
+                default: 1,
+              },
+              created: {
+                type: "timestamp",
+                default: "now()",
+              },
+              deleted: {
+                type: "boolean",
+                default: false,
+              },
+            },
+            primaryKey: [
+              "helper_name",
+              "helper_version",
+              "service_name",
+              "alias",
+              "global_name",
+              "global_version",
+            ],
+            foreignKeys: [
+              {
+                tableName: "helper",
+                fields: ["helper_name", "helper_version", "service_name"],
+                referenceFields: ["name", "version", "service_name"],
+              },
+              {
+                tableName: "global_registry",
+                fields: ["global_name", "global_version", "service_name"],
+                referenceFields: ["name", "version", "service_name"],
+              },
+            ],
+          },
+
+          task_tool_dependency_snapshot: {
+            fields: {
+              task_name: {
+                type: "varchar",
+                required: true,
+              },
+              task_version: {
+                type: "int",
+                default: 1,
+              },
+              service_name: {
+                type: "varchar",
+                references: "service(name)",
+                onDelete: "cascade",
+                required: true,
+              },
+              alias: {
+                type: "varchar",
+                required: true,
+                constraints: {
+                  maxLength: STRUCTURAL_NAME_MAX_LENGTH,
+                },
+              },
+              dependency_kind: {
+                type: "varchar",
+                required: true,
+                constraints: {
+                  maxLength: 16,
+                },
+              },
+              dependency_name: {
+                type: "varchar",
+                required: true,
+              },
+              dependency_version: {
+                type: "int",
+                default: 1,
+              },
+              depth: {
+                type: "int",
+                default: 1,
+              },
+              created: {
+                type: "timestamp",
+                default: "now()",
+              },
+              deleted: {
+                type: "boolean",
+                default: false,
+              },
+            },
+            primaryKey: [
+              "task_name",
+              "task_version",
+              "service_name",
+              "alias",
+              "dependency_kind",
+              "dependency_name",
+              "dependency_version",
+              "depth",
+            ],
+            indexes: [["service_name", "dependency_kind", "depth"]],
+          },
+
+          helper_tool_dependency_snapshot: {
+            fields: {
+              helper_name: {
+                type: "varchar",
+                required: true,
+              },
+              helper_version: {
+                type: "int",
+                default: 1,
+              },
+              service_name: {
+                type: "varchar",
+                references: "service(name)",
+                onDelete: "cascade",
+                required: true,
+              },
+              alias: {
+                type: "varchar",
+                required: true,
+                constraints: {
+                  maxLength: STRUCTURAL_NAME_MAX_LENGTH,
+                },
+              },
+              dependency_kind: {
+                type: "varchar",
+                required: true,
+                constraints: {
+                  maxLength: 16,
+                },
+              },
+              dependency_name: {
+                type: "varchar",
+                required: true,
+              },
+              dependency_version: {
+                type: "int",
+                default: 1,
+              },
+              depth: {
+                type: "int",
+                default: 1,
+              },
+              created: {
+                type: "timestamp",
+                default: "now()",
+              },
+              deleted: {
+                type: "boolean",
+                default: false,
+              },
+            },
+            primaryKey: [
+              "helper_name",
+              "helper_version",
+              "service_name",
+              "alias",
+              "dependency_kind",
+              "dependency_name",
+              "dependency_version",
+              "depth",
+            ],
+            indexes: [["service_name", "dependency_kind", "depth"]],
+          },
+
           field_type: {
             fields: {
               name: {
@@ -2486,6 +4150,71 @@ export default class CadenzaDB {
                 ],
               },
             },
+          },
+
+          service_instance_lease: {
+            fields: {
+              service_instance_id: {
+                type: "uuid",
+                primary: true,
+                references: "service_instance(uuid)",
+                onDelete: "cascade",
+                required: true,
+              },
+              status: {
+                type: "varchar",
+                required: true,
+                default: "active",
+                constraints: {
+                  oneOf: ["active", "non_responsive", "inactive", "deleted"],
+                  maxLength: 32,
+                },
+              },
+              is_ready: {
+                type: "boolean",
+                default: false,
+              },
+              readiness_reason: {
+                type: "text",
+                default: null,
+              },
+              lease_expires_at: {
+                type: "timestamp",
+                default: null,
+              },
+              last_lease_renewed_at: {
+                type: "timestamp",
+                default: null,
+              },
+              last_ready_at: {
+                type: "timestamp",
+                default: null,
+              },
+              last_observed_transport_at: {
+                type: "timestamp",
+                default: null,
+              },
+              shutdown_requested_at: {
+                type: "timestamp",
+                default: null,
+              },
+              created: {
+                type: "timestamp",
+                default: "now()",
+              },
+              modified: {
+                type: "timestamp",
+                default: "now()",
+              },
+              deleted: {
+                type: "boolean",
+                default: false,
+              },
+            },
+            indexes: [
+              ["status", "is_ready", "lease_expires_at"],
+              ["lease_expires_at"],
+            ],
           },
 
           service_instance_transport: {
@@ -3513,6 +5242,9 @@ export default class CadenzaDB {
       const localActorInsertTask = Cadenza.getLocalCadenzaDBInsertTask("actor");
       const localRoutineInsertTask =
         Cadenza.getLocalCadenzaDBInsertTask("routine");
+      const localHelperInsertTask = Cadenza.getLocalCadenzaDBInsertTask("helper");
+      const localGlobalRegistryInsertTask =
+        Cadenza.getLocalCadenzaDBInsertTask("global_registry");
       const localTaskRelationshipInsertTask =
         Cadenza.getLocalCadenzaDBInsertTask("directional_task_graph_map");
       const localSignalToTaskMapInsertTask =
@@ -3523,7 +5255,15 @@ export default class CadenzaDB {
         Cadenza.getLocalCadenzaDBInsertTask("actor_task_map");
       const localTaskToRoutineMapInsertTask =
         Cadenza.getLocalCadenzaDBInsertTask("task_to_routine_map");
-    if (
+      const localTaskToHelperMapInsertTask =
+        Cadenza.getLocalCadenzaDBInsertTask("task_to_helper_map");
+      const localHelperToHelperMapInsertTask =
+        Cadenza.getLocalCadenzaDBInsertTask("helper_to_helper_map");
+      const localTaskToGlobalMapInsertTask =
+        Cadenza.getLocalCadenzaDBInsertTask("task_to_global_map");
+      const localHelperToGlobalMapInsertTask =
+        Cadenza.getLocalCadenzaDBInsertTask("helper_to_global_map");
+      if (
         !localTaskInsertTask ||
         !localSignalRegistryInsertTask ||
         !localIntentRegistryInsertTask ||
@@ -3758,6 +5498,79 @@ export default class CadenzaDB {
         },
       ).doOn(META_MANIFEST_ENTITY_PROJECTION_REQUESTED);
 
+      const prepareManifestHelperInsertTask = Cadenza.createMetaTask(
+        "Prepare manifest helper projection insert",
+        (ctx) => {
+          const rows = normalizeRowArray(ctx?.__projectedHelpers);
+          if (rows.length === 0) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            __manifestEntityKind: "helper",
+            data: rows,
+            queryData: {
+              data: rows,
+              onConflict: {
+                target: ["name", "service_name", "version"],
+                action: {
+                  do: "update",
+                  set: {
+                    description: "excluded",
+                    is_meta: "excluded",
+                    handler_source: "excluded",
+                    language: "excluded",
+                    deleted: "false",
+                  },
+                },
+              },
+            },
+          };
+        },
+        "Builds durable helper upserts from manifest-derived helper rows.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn(META_MANIFEST_ENTITY_PROJECTION_REQUESTED);
+
+      const prepareManifestGlobalInsertTask = Cadenza.createMetaTask(
+        "Prepare manifest global projection insert",
+        (ctx) => {
+          const rows = normalizeRowArray(ctx?.__projectedGlobals);
+          if (rows.length === 0) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            __manifestEntityKind: "global",
+            data: rows,
+            queryData: {
+              data: rows,
+              onConflict: {
+                target: ["name", "service_name", "version"],
+                action: {
+                  do: "update",
+                  set: {
+                    description: "excluded",
+                    is_meta: "excluded",
+                    value: "excluded",
+                    deleted: "false",
+                  },
+                },
+              },
+            },
+          };
+        },
+        "Builds durable global_registry upserts from manifest-derived global rows.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn(META_MANIFEST_ENTITY_PROJECTION_REQUESTED);
+
       const prepareManifestTaskRelationshipInsertTask = Cadenza.createMetaTask(
         "Prepare manifest task relationship projection insert",
         (ctx) => {
@@ -3922,6 +5735,150 @@ export default class CadenzaDB {
         },
       ).doOn(META_MANIFEST_ASSOCIATION_PROJECTION_REQUESTED);
 
+      const prepareManifestTaskToHelperMapInsertTask = Cadenza.createMetaTask(
+        "Prepare manifest task-to-helper projection insert",
+        (ctx) => {
+          const rows = normalizeRowArray(ctx?.__projectedTaskToHelperMaps);
+          if (rows.length === 0) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            data: rows,
+            queryData: {
+              data: rows,
+              onConflict: {
+                target: [
+                  "task_name",
+                  "task_version",
+                  "service_name",
+                  "alias",
+                  "helper_name",
+                  "helper_version",
+                ],
+                action: {
+                  do: "nothing",
+                },
+              },
+            },
+          };
+        },
+        "Builds durable task_to_helper_map inserts from manifest-derived structural rows.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn(META_MANIFEST_ASSOCIATION_PROJECTION_REQUESTED);
+
+      const prepareManifestHelperToHelperMapInsertTask = Cadenza.createMetaTask(
+        "Prepare manifest helper-to-helper projection insert",
+        (ctx) => {
+          const rows = normalizeRowArray(ctx?.__projectedHelperToHelperMaps);
+          if (rows.length === 0) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            data: rows,
+            queryData: {
+              data: rows,
+              onConflict: {
+                target: [
+                  "helper_name",
+                  "helper_version",
+                  "service_name",
+                  "alias",
+                  "dependency_helper_name",
+                  "dependency_helper_version",
+                ],
+                action: {
+                  do: "nothing",
+                },
+              },
+            },
+          };
+        },
+        "Builds durable helper_to_helper_map inserts from manifest-derived structural rows.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn(META_MANIFEST_ASSOCIATION_PROJECTION_REQUESTED);
+
+      const prepareManifestTaskToGlobalMapInsertTask = Cadenza.createMetaTask(
+        "Prepare manifest task-to-global projection insert",
+        (ctx) => {
+          const rows = normalizeRowArray(ctx?.__projectedTaskToGlobalMaps);
+          if (rows.length === 0) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            data: rows,
+            queryData: {
+              data: rows,
+              onConflict: {
+                target: [
+                  "task_name",
+                  "task_version",
+                  "service_name",
+                  "alias",
+                  "global_name",
+                  "global_version",
+                ],
+                action: {
+                  do: "nothing",
+                },
+              },
+            },
+          };
+        },
+        "Builds durable task_to_global_map inserts from manifest-derived structural rows.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn(META_MANIFEST_ASSOCIATION_PROJECTION_REQUESTED);
+
+      const prepareManifestHelperToGlobalMapInsertTask = Cadenza.createMetaTask(
+        "Prepare manifest helper-to-global projection insert",
+        (ctx) => {
+          const rows = normalizeRowArray(ctx?.__projectedHelperToGlobalMaps);
+          if (rows.length === 0) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            data: rows,
+            queryData: {
+              data: rows,
+              onConflict: {
+                target: [
+                  "helper_name",
+                  "helper_version",
+                  "service_name",
+                  "alias",
+                  "global_name",
+                  "global_version",
+                ],
+                action: {
+                  do: "nothing",
+                },
+              },
+            },
+          };
+        },
+        "Builds durable helper_to_global_map inserts from manifest-derived structural rows.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn(META_MANIFEST_ASSOCIATION_PROJECTION_REQUESTED);
+
       const collectManifestEntityPersistenceCompletionTask =
         Cadenza.createMetaTask(
           "Collect manifest entity persistence completion",
@@ -3952,6 +5909,12 @@ export default class CadenzaDB {
       prepareManifestIntentInsertTask.then(localIntentRegistryInsertTask);
       prepareManifestActorInsertTask.then(localActorInsertTask);
       prepareManifestRoutineInsertTask.then(localRoutineInsertTask);
+      if (localHelperInsertTask) {
+        prepareManifestHelperInsertTask.then(localHelperInsertTask);
+      }
+      if (localGlobalRegistryInsertTask) {
+        prepareManifestGlobalInsertTask.then(localGlobalRegistryInsertTask);
+      }
       localTaskInsertTask.then(collectManifestEntityPersistenceCompletionTask);
       localSignalRegistryInsertTask.then(
         collectManifestEntityPersistenceCompletionTask,
@@ -3961,6 +5924,14 @@ export default class CadenzaDB {
       );
       localActorInsertTask.then(collectManifestEntityPersistenceCompletionTask);
       localRoutineInsertTask.then(collectManifestEntityPersistenceCompletionTask);
+      if (localHelperInsertTask) {
+        localHelperInsertTask.then(collectManifestEntityPersistenceCompletionTask);
+      }
+      if (localGlobalRegistryInsertTask) {
+        localGlobalRegistryInsertTask.then(
+          collectManifestEntityPersistenceCompletionTask,
+        );
+      }
       prepareManifestTaskRelationshipInsertTask.then(
         localTaskRelationshipInsertTask,
       );
@@ -3970,6 +5941,26 @@ export default class CadenzaDB {
       prepareManifestTaskToRoutineMapInsertTask.then(
         localTaskToRoutineMapInsertTask,
       );
+      if (localTaskToHelperMapInsertTask) {
+        prepareManifestTaskToHelperMapInsertTask.then(
+          localTaskToHelperMapInsertTask,
+        );
+      }
+      if (localHelperToHelperMapInsertTask) {
+        prepareManifestHelperToHelperMapInsertTask.then(
+          localHelperToHelperMapInsertTask,
+        );
+      }
+      if (localTaskToGlobalMapInsertTask) {
+        prepareManifestTaskToGlobalMapInsertTask.then(
+          localTaskToGlobalMapInsertTask,
+        );
+      }
+      if (localHelperToGlobalMapInsertTask) {
+        prepareManifestHelperToGlobalMapInsertTask.then(
+          localHelperToGlobalMapInsertTask,
+        );
+      }
 
       void collectManifestEntityPersistenceCompletionTask;
 
@@ -3979,11 +5970,17 @@ export default class CadenzaDB {
         hasLocalIntentRegistryInsertTask: !!localIntentRegistryInsertTask,
         hasLocalActorInsertTask: !!localActorInsertTask,
         hasLocalRoutineInsertTask: !!localRoutineInsertTask,
+        hasLocalHelperInsertTask: !!localHelperInsertTask,
+        hasLocalGlobalRegistryInsertTask: !!localGlobalRegistryInsertTask,
         hasLocalTaskRelationshipInsertTask: !!localTaskRelationshipInsertTask,
         hasLocalSignalToTaskMapInsertTask: !!localSignalToTaskMapInsertTask,
         hasLocalIntentToTaskMapInsertTask: !!localIntentToTaskMapInsertTask,
         hasLocalActorTaskMapInsertTask: !!localActorTaskMapInsertTask,
         hasLocalTaskToRoutineMapInsertTask: !!localTaskToRoutineMapInsertTask,
+        hasLocalTaskToHelperMapInsertTask: !!localTaskToHelperMapInsertTask,
+        hasLocalHelperToHelperMapInsertTask: !!localHelperToHelperMapInsertTask,
+        hasLocalTaskToGlobalMapInsertTask: !!localTaskToGlobalMapInsertTask,
+        hasLocalHelperToGlobalMapInsertTask: !!localHelperToGlobalMapInsertTask,
       });
 
       return true;
@@ -4040,17 +6037,22 @@ export default class CadenzaDB {
       }
 
       let queryServiceInstanceTask;
+      let queryServiceInstanceLeaseTask;
       let queryServiceInstanceTransportTask;
       let queryServiceManifestTask;
       try {
         ({
           queryServiceInstanceTask,
+          queryServiceInstanceLeaseTask,
           queryServiceInstanceTransportTask,
           queryServiceManifestTask,
         } = resolveLocalServiceRegistrySyncTasks());
       } catch {
         logLocalSyncDebug("authority_registry_projection_tasks_unavailable", {
           hasQueryServiceInstanceTask: !!resolveLocalSyncQueryTask("service_instance"),
+          hasQueryServiceInstanceLeaseTask: !!resolveLocalSyncQueryTask(
+            "service_instance_lease",
+          ),
           hasQueryServiceInstanceTransportTask: !!resolveLocalSyncQueryTask(
             "service_instance_transport",
           ),
@@ -4109,6 +6111,34 @@ export default class CadenzaDB {
           };
         },
         "Normalizes persisted service-instance transport query rows for authority runtime projection.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      const normalizeProjectedServiceInstanceLeasesTask = Cadenza.createMetaTask(
+        "Normalize projected authority service instance leases",
+        (ctx) => {
+          const projectionId = resolveAuthorityRegistryProjectionId(ctx, {
+            consumePending: false,
+          });
+          const serviceInstanceLeases = normalizeRowArray(
+            ctx.rows ?? ctx.serviceInstanceLeases,
+          );
+          logLocalSyncDebug("normalized_authority_service_instance_leases", {
+            rowCount: serviceInstanceLeases.length,
+            projectionId,
+          });
+          return {
+            ...ctx,
+            ...(projectionId
+              ? { __projectionId: projectionId, projectionId }
+              : {}),
+            serviceInstanceLeases,
+          };
+        },
+        "Normalizes persisted service-instance lease query rows for authority runtime projection.",
         {
           register: false,
           isHidden: true,
@@ -4221,6 +6251,11 @@ export default class CadenzaDB {
           if (Array.isArray(ctx?.serviceInstances)) {
             entry.serviceInstances = normalizeRowArray(ctx.serviceInstances);
           }
+          if (Array.isArray(ctx?.serviceInstanceLeases)) {
+            entry.serviceInstanceLeases = normalizeRowArray(
+              ctx.serviceInstanceLeases,
+            );
+          }
           if (Array.isArray(ctx?.serviceInstanceTransports)) {
             entry.serviceInstanceTransports = normalizeRowArray(
               ctx.serviceInstanceTransports,
@@ -4241,16 +6276,23 @@ export default class CadenzaDB {
             logLocalSyncDebug("authority_registry_projection_waiting_for_branches", {
               projectionId,
               hasServiceInstances: !!entry.serviceInstances,
+              hasServiceInstanceLeases:
+                queryServiceInstanceLeaseTask === undefined
+                  ? true
+                  : !!entry.serviceInstanceLeases,
               hasServiceInstanceTransports: !!entry.serviceInstanceTransports,
               hasServiceManifests: !!entry.serviceManifests,
             });
             return false;
           }
 
+          const serviceInstanceLeases = entry.serviceInstanceLeases ?? [];
+
           authorityRegistryProjectionAccumulator.delete(projectionId);
           authorityRegistryProjectionPayloads.set(projectionId, {
             updatedAt: now,
             serviceInstances: entry.serviceInstances,
+            serviceInstanceLeases,
             serviceInstanceTransports: entry.serviceInstanceTransports,
             serviceManifests: entry.serviceManifests,
           });
@@ -4260,6 +6302,7 @@ export default class CadenzaDB {
           logLocalSyncDebug("authority_registry_projection_collected", {
             projectionId,
             serviceInstances: entry.serviceInstances.length,
+            serviceInstanceLeases: serviceInstanceLeases.length,
             serviceInstanceTransports: entry.serviceInstanceTransports.length,
             serviceManifests: entry.serviceManifests.length,
           });
@@ -4268,6 +6311,7 @@ export default class CadenzaDB {
             ...ctx,
             __projectionId: projectionId,
             serviceInstances: entry.serviceInstances,
+            serviceInstanceLeases,
             serviceInstanceTransports: entry.serviceInstanceTransports,
             serviceManifests: entry.serviceManifests,
           };
@@ -4293,6 +6337,10 @@ export default class CadenzaDB {
             normalizeRowArray(ctx.serviceInstances).length > 0
               ? normalizeRowArray(ctx.serviceInstances)
               : normalizeRowArray(cachedPayload?.serviceInstances);
+          const serviceInstanceLeaseRows =
+            normalizeRowArray(ctx.serviceInstanceLeases).length > 0
+              ? normalizeRowArray(ctx.serviceInstanceLeases)
+              : normalizeRowArray(cachedPayload?.serviceInstanceLeases);
           const transportRows =
             normalizeRowArray(ctx.serviceInstanceTransports).length > 0
               ? normalizeRowArray(ctx.serviceInstanceTransports)
@@ -4302,6 +6350,10 @@ export default class CadenzaDB {
               ? normalizeRowArray(ctx.serviceManifests)
               : normalizeRowArray(cachedPayload?.serviceManifests);
           authorityRegistryProjectionPayloads.delete(projectionId);
+          const mergedServiceInstanceRows = overlayServiceInstanceRowsWithLeases(
+            serviceInstanceRows,
+            serviceInstanceLeaseRows,
+          );
           const transportsByInstance = new Map<string, Array<Record<string, unknown>>>();
 
           for (const row of transportRows) {
@@ -4317,7 +6369,7 @@ export default class CadenzaDB {
             transportsByInstance.set(serviceInstanceId, existing);
           }
 
-          for (const row of serviceInstanceRows) {
+          for (const row of mergedServiceInstanceRows) {
             const uuid = readString(row.uuid);
             if (!uuid) {
               continue;
@@ -4352,13 +6404,15 @@ export default class CadenzaDB {
           });
 
           logLocalSyncDebug("projected_authority_registry_state", {
-            serviceInstances: serviceInstanceRows.length,
+            serviceInstances: mergedServiceInstanceRows.length,
+            serviceInstanceLeases: serviceInstanceLeaseRows.length,
             serviceInstanceTransports: transportRows.length,
             serviceManifests: manifestRows.length,
           });
 
           return {
-            projectedServiceInstances: serviceInstanceRows.length,
+            projectedServiceInstances: mergedServiceInstanceRows.length,
+            projectedServiceInstanceLeases: serviceInstanceLeaseRows.length,
             projectedServiceInstanceTransports: transportRows.length,
             projectedServiceManifests: manifestRows.length,
           };
@@ -4377,6 +6431,10 @@ export default class CadenzaDB {
         queryServiceManifestTask,
       );
       queryServiceInstanceTask.then(normalizeProjectedServiceInstancesTask);
+      if (queryServiceInstanceLeaseTask) {
+        executeAuthorityRegistryProjectionTask.then(queryServiceInstanceLeaseTask);
+        queryServiceInstanceLeaseTask.then(normalizeProjectedServiceInstanceLeasesTask);
+      }
       queryServiceInstanceTransportTask.then(
         normalizeProjectedServiceInstanceTransportsTask,
       );
@@ -4387,6 +6445,11 @@ export default class CadenzaDB {
       normalizeProjectedServiceInstancesTask.then(
         collectAuthorityRegistryProjectionTask,
       );
+      if (queryServiceInstanceLeaseTask) {
+        normalizeProjectedServiceInstanceLeasesTask.then(
+          collectAuthorityRegistryProjectionTask,
+        );
+      }
       normalizeProjectedServiceInstanceTransportsTask.then(
         collectAuthorityRegistryProjectionTask,
       );
@@ -4414,6 +6477,7 @@ export default class CadenzaDB {
       );
       logLocalSyncDebug("authority_registry_projection_registered", {
         hasQueryServiceInstanceTask: !!queryServiceInstanceTask,
+        hasQueryServiceInstanceLeaseTask: !!queryServiceInstanceLeaseTask,
         hasQueryServiceInstanceTransportTask: !!queryServiceInstanceTransportTask,
         hasQueryServiceManifestTask: !!queryServiceManifestTask,
       });
@@ -4448,19 +6512,77 @@ export default class CadenzaDB {
       scheduleLocalEnsureRetry(ensureAuthorityRegistryProjectionTasks, delayMs);
     }
 
+    const buildOnConflictDoNothing = (target: string[]) => ({
+      target,
+      action: {
+        do: "nothing",
+      },
+    });
+    const buildOnConflictUpdate = (
+      target: string[],
+      set: Record<string, unknown>,
+    ) => ({
+      target,
+      action: {
+        do: "update",
+        set,
+      },
+    });
+    const extractToolDependencyServiceNames = (
+      ctx: Record<string, unknown> | null,
+    ): string[] => {
+      const serviceNames = new Set<string>();
+      const rowCollections = [
+        normalizeRowArray(ctx?.data),
+        normalizeRowArray(ctx?.rows),
+        normalizeRowArray(readRecord(ctx?.queryData)?.data),
+      ];
+
+      for (const rows of rowCollections) {
+        for (const row of rows) {
+          const serviceName =
+            readString(row.service_name) || readString(row.serviceName);
+          if (serviceName) {
+            serviceNames.add(serviceName);
+          }
+        }
+      }
+
+      const directRecords = [
+        readRecord(ctx?.data),
+        readRecord(ctx?.queryData),
+        readRecord(readRecord(ctx?.queryData)?.data),
+        ctx,
+      ];
+
+      for (const record of directRecords) {
+        const serviceName =
+          readString(record?.service_name) || readString(record?.serviceName);
+        if (serviceName) {
+          serviceNames.add(serviceName);
+        }
+      }
+
+      return Array.from(serviceNames);
+    };
+
     const localIntentRegistryInsertTask =
       Cadenza.getLocalCadenzaDBInsertTask("intent_registry");
     const localIntentToTaskMapInsertTask =
       Cadenza.getLocalCadenzaDBInsertTask("intent_to_task_map");
+    const localHelperInsertTask = Cadenza.getLocalCadenzaDBInsertTask("helper");
+    const localGlobalRegistryInsertTask =
+      Cadenza.getLocalCadenzaDBInsertTask("global_registry");
+    const localTaskToHelperMapInsertTask =
+      Cadenza.getLocalCadenzaDBInsertTask("task_to_helper_map");
+    const localHelperToHelperMapInsertTask =
+      Cadenza.getLocalCadenzaDBInsertTask("helper_to_helper_map");
+    const localTaskToGlobalMapInsertTask =
+      Cadenza.getLocalCadenzaDBInsertTask("task_to_global_map");
+    const localHelperToGlobalMapInsertTask =
+      Cadenza.getLocalCadenzaDBInsertTask("helper_to_global_map");
 
     if (localIntentRegistryInsertTask && localIntentToTaskMapInsertTask) {
-      const buildOnConflictDoNothing = (target: string[]) => ({
-        target,
-        action: {
-          do: "nothing",
-        },
-      });
-
       const prepareIntentRegistryAssociationTask = Cadenza.createMetaTask(
         "Prepare direct intent registry insert from task-intent association",
         (ctx: any) => {
@@ -4555,6 +6677,827 @@ export default class CadenzaDB {
         .then(restoreIntentToTaskMapAssociationTask)
         .then(localIntentToTaskMapInsertTask);
     }
+
+    if (localHelperInsertTask) {
+      const prepareDirectHelperUpsertTask = Cadenza.createMetaTask(
+        "Prepare direct helper upsert",
+        (ctx: any) => {
+          const data = readRecord(ctx?.data);
+          const name = readString(data?.name);
+          const serviceName = readString(data?.serviceName ?? data?.service_name);
+          if (!name || !serviceName) {
+            return false;
+          }
+
+          const row = {
+            name,
+            version: readInteger(data?.version) ?? 1,
+            description: readString(data?.description),
+            serviceName,
+            isMeta: readBoolean(data?.isMeta ?? data?.is_meta),
+            handlerSource:
+              readString(data?.handlerSource) ||
+              readString(data?.handler_source) ||
+              readString(data?.functionString) ||
+              "",
+            language: readString(data?.language) || "js",
+          };
+
+          return {
+            ...ctx,
+            data: row,
+            queryData: {
+              data: row,
+              onConflict: buildOnConflictUpdate(
+                ["name", "service_name", "version"],
+                {
+                  description: "excluded",
+                  is_meta: "excluded",
+                  handler_source: "excluded",
+                  language: "excluded",
+                  deleted: "false",
+                },
+              ),
+            },
+          };
+        },
+        "Builds helper upserts from direct helper graph metadata.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn(
+        "global.meta.graph_metadata.helper_created",
+        "global.meta.graph_metadata.helper_updated",
+      );
+
+      prepareDirectHelperUpsertTask.then(localHelperInsertTask);
+    }
+
+    if (localGlobalRegistryInsertTask) {
+      const prepareDirectGlobalUpsertTask = Cadenza.createMetaTask(
+        "Prepare direct global upsert",
+        (ctx: any) => {
+          const data = readRecord(ctx?.data);
+          const name = readString(data?.name);
+          const serviceName = readString(data?.serviceName ?? data?.service_name);
+          if (!name || !serviceName) {
+            return false;
+          }
+
+          const row = {
+            name,
+            version: readInteger(data?.version) ?? 1,
+            description: readString(data?.description),
+            serviceName,
+            isMeta: readBoolean(data?.isMeta ?? data?.is_meta),
+            value: data?.value ?? null,
+          };
+
+          return {
+            ...ctx,
+            data: row,
+            queryData: {
+              data: row,
+              onConflict: buildOnConflictUpdate(
+                ["name", "service_name", "version"],
+                {
+                  description: "excluded",
+                  is_meta: "excluded",
+                  value: "excluded",
+                  deleted: "false",
+                },
+              ),
+            },
+          };
+        },
+        "Builds global_registry upserts from direct global graph metadata.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn(
+        "global.meta.graph_metadata.global_created",
+        "global.meta.graph_metadata.global_updated",
+      );
+
+      prepareDirectGlobalUpsertTask.then(localGlobalRegistryInsertTask);
+    }
+
+    if (localTaskToHelperMapInsertTask) {
+      Cadenza.createMetaTask(
+        "Prepare direct task-to-helper map insert",
+        (ctx: any) => {
+          const data = readRecord(ctx?.data);
+          const taskName = readString(data?.taskName ?? data?.task_name);
+          const serviceName = readString(data?.serviceName ?? data?.service_name);
+          const alias = readString(data?.alias);
+          const helperName = readString(
+            data?.dependencyHelperName ?? data?.helperName ?? data?.helper_name,
+          );
+          if (!taskName || !serviceName || !alias || !helperName) {
+            return false;
+          }
+
+          const row = {
+            taskName,
+            taskVersion: readInteger(data?.taskVersion ?? data?.task_version) ?? 1,
+            serviceName,
+            alias,
+            helperName,
+            helperVersion:
+              readInteger(
+                data?.dependencyHelperVersion ?? data?.helperVersion ?? data?.helper_version,
+              ) ?? 1,
+          };
+
+          return {
+            ...ctx,
+            data: row,
+            queryData: {
+              data: row,
+              onConflict: buildOnConflictDoNothing([
+                "task_name",
+                "task_version",
+                "service_name",
+                "alias",
+                "helper_name",
+                "helper_version",
+              ]),
+            },
+          };
+        },
+        "Builds task_to_helper_map rows from direct task-helper metadata.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      )
+        .doOn("global.meta.graph_metadata.task_helper_associated")
+        .then(localTaskToHelperMapInsertTask);
+    }
+
+    if (localHelperToHelperMapInsertTask) {
+      Cadenza.createMetaTask(
+        "Prepare direct helper-to-helper map insert",
+        (ctx: any) => {
+          const data = readRecord(ctx?.data);
+          const helperName = readString(data?.helperName ?? data?.helper_name);
+          const serviceName = readString(data?.serviceName ?? data?.service_name);
+          const alias = readString(data?.alias);
+          const dependencyHelperName = readString(
+            data?.dependencyHelperName ?? data?.dependency_helper_name,
+          );
+          if (!helperName || !serviceName || !alias || !dependencyHelperName) {
+            return false;
+          }
+
+          const row = {
+            helperName,
+            helperVersion:
+              readInteger(data?.helperVersion ?? data?.helper_version) ?? 1,
+            serviceName,
+            alias,
+            dependencyHelperName,
+            dependencyHelperVersion:
+              readInteger(
+                data?.dependencyHelperVersion ?? data?.dependency_helper_version,
+              ) ?? 1,
+          };
+
+          return {
+            ...ctx,
+            data: row,
+            queryData: {
+              data: row,
+              onConflict: buildOnConflictDoNothing([
+                "helper_name",
+                "helper_version",
+                "service_name",
+                "alias",
+                "dependency_helper_name",
+                "dependency_helper_version",
+              ]),
+            },
+          };
+        },
+        "Builds helper_to_helper_map rows from direct helper-helper metadata.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      )
+        .doOn("global.meta.graph_metadata.helper_helper_associated")
+        .then(localHelperToHelperMapInsertTask);
+    }
+
+    if (localTaskToGlobalMapInsertTask) {
+      Cadenza.createMetaTask(
+        "Prepare direct task-to-global map insert",
+        (ctx: any) => {
+          const data = readRecord(ctx?.data);
+          const taskName = readString(data?.taskName ?? data?.task_name);
+          const serviceName = readString(data?.serviceName ?? data?.service_name);
+          const alias = readString(data?.alias);
+          const globalName = readString(data?.globalName ?? data?.global_name);
+          if (!taskName || !serviceName || !alias || !globalName) {
+            return false;
+          }
+
+          const row = {
+            taskName,
+            taskVersion: readInteger(data?.taskVersion ?? data?.task_version) ?? 1,
+            serviceName,
+            alias,
+            globalName,
+            globalVersion:
+              readInteger(data?.globalVersion ?? data?.global_version) ?? 1,
+          };
+
+          return {
+            ...ctx,
+            data: row,
+            queryData: {
+              data: row,
+              onConflict: buildOnConflictDoNothing([
+                "task_name",
+                "task_version",
+                "service_name",
+                "alias",
+                "global_name",
+                "global_version",
+              ]),
+            },
+          };
+        },
+        "Builds task_to_global_map rows from direct task-global metadata.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      )
+        .doOn("global.meta.graph_metadata.task_global_associated")
+        .then(localTaskToGlobalMapInsertTask);
+    }
+
+    if (localHelperToGlobalMapInsertTask) {
+      Cadenza.createMetaTask(
+        "Prepare direct helper-to-global map insert",
+        (ctx: any) => {
+          const data = readRecord(ctx?.data);
+          const helperName = readString(data?.helperName ?? data?.helper_name);
+          const serviceName = readString(data?.serviceName ?? data?.service_name);
+          const alias = readString(data?.alias);
+          const globalName = readString(data?.globalName ?? data?.global_name);
+          if (!helperName || !serviceName || !alias || !globalName) {
+            return false;
+          }
+
+          const row = {
+            helperName,
+            helperVersion:
+              readInteger(data?.helperVersion ?? data?.helper_version) ?? 1,
+            serviceName,
+            alias,
+            globalName,
+            globalVersion:
+              readInteger(data?.globalVersion ?? data?.global_version) ?? 1,
+          };
+
+          return {
+            ...ctx,
+            data: row,
+            queryData: {
+              data: row,
+              onConflict: buildOnConflictDoNothing([
+                "helper_name",
+                "helper_version",
+                "service_name",
+                "alias",
+                "global_name",
+                "global_version",
+              ]),
+            },
+          };
+        },
+        "Builds helper_to_global_map rows from direct helper-global metadata.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      )
+        .doOn("global.meta.graph_metadata.helper_global_associated")
+        .then(localHelperToGlobalMapInsertTask);
+    }
+
+    const ensureAuthorityToolDependencySnapshotTasks = () => {
+      if (Cadenza.get("Execute tool dependency snapshot refresh")) {
+        return true;
+      }
+
+      const localHelperQueryTask = Cadenza.getLocalCadenzaDBQueryTask("helper");
+      const localGlobalRegistryQueryTask =
+        Cadenza.getLocalCadenzaDBQueryTask("global_registry");
+      const localTaskToHelperMapQueryTask =
+        Cadenza.getLocalCadenzaDBQueryTask("task_to_helper_map");
+      const localHelperToHelperMapQueryTask =
+        Cadenza.getLocalCadenzaDBQueryTask("helper_to_helper_map");
+      const localTaskToGlobalMapQueryTask =
+        Cadenza.getLocalCadenzaDBQueryTask("task_to_global_map");
+      const localHelperToGlobalMapQueryTask =
+        Cadenza.getLocalCadenzaDBQueryTask("helper_to_global_map");
+      const localTaskToolDependencySnapshotInsertTask =
+        Cadenza.getLocalCadenzaDBInsertTask("task_tool_dependency_snapshot");
+      const localHelperToolDependencySnapshotInsertTask =
+        Cadenza.getLocalCadenzaDBInsertTask("helper_tool_dependency_snapshot");
+      const localTaskToolDependencySnapshotUpdateTask = Cadenza.getLocalCadenzaDBTask(
+        "task_tool_dependency_snapshot",
+        "update",
+      );
+      const localHelperToolDependencySnapshotUpdateTask =
+        Cadenza.getLocalCadenzaDBTask(
+          "helper_tool_dependency_snapshot",
+          "update",
+        );
+
+      if (
+        !localHelperQueryTask ||
+        !localGlobalRegistryQueryTask ||
+        !localTaskToHelperMapQueryTask ||
+        !localHelperToHelperMapQueryTask ||
+        !localTaskToGlobalMapQueryTask ||
+        !localHelperToGlobalMapQueryTask ||
+        !localTaskToolDependencySnapshotInsertTask ||
+        !localHelperToolDependencySnapshotInsertTask ||
+        !localTaskToolDependencySnapshotUpdateTask ||
+        !localHelperToolDependencySnapshotUpdateTask
+      ) {
+        return false;
+      }
+
+      const requestToolDependencySnapshotRefreshTask = Cadenza.createMetaTask(
+        "Request tool dependency snapshot refresh",
+        (ctx) => {
+          const serviceNames = extractToolDependencyServiceNames(readRecord(ctx));
+          if (serviceNames.length === 0) {
+            return false;
+          }
+
+          for (const serviceName of serviceNames) {
+            Cadenza.debounce(
+              META_TOOL_DEPENDENCY_SNAPSHOT_REFRESH_EXECUTE,
+              {
+                ...ctx,
+                serviceName,
+              },
+              TOOL_DEPENDENCY_SNAPSHOT_REFRESH_DEBOUNCE_MS,
+            );
+          }
+
+          return {
+            ...ctx,
+            requestedServiceNames: serviceNames,
+          };
+        },
+        "Requests a debounced rebuild of tool dependency snapshot rows for affected services.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn(
+        META_TOOL_DEPENDENCY_SNAPSHOT_REFRESH_REQUESTED,
+        AUTHORITY_SERVICE_MANIFEST_UPDATED_SIGNAL,
+      );
+
+      const executeToolDependencySnapshotRefreshTask = Cadenza.createUniqueMetaTask(
+        "Execute tool dependency snapshot refresh",
+        (ctx) => {
+          const serviceName =
+            readString(ctx?.serviceName) ||
+            readString(ctx?.__projectedServiceName) ||
+            readString(ctx?.service_name);
+          if (!serviceName) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            serviceName,
+            queryData: {
+              filter: {
+                service_name: serviceName,
+                deleted: false,
+              },
+            },
+          };
+        },
+        "Executes one service-scoped query fan-out for tool dependency snapshot rebuilds.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn(META_TOOL_DEPENDENCY_SNAPSHOT_REFRESH_EXECUTE);
+
+      const normalizeToolDependencyQueryRowsTask = Cadenza.createMetaTask(
+        "Normalize tool dependency snapshot query rows",
+        (ctx) => {
+          const source = readString(ctx?.__toolDependencySource);
+          const serviceName = readString(ctx?.serviceName);
+          if (!source || !serviceName) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            serviceName,
+            [source]: normalizeRowArray(ctx?.rows),
+          };
+        },
+        "Normalizes queried rows used to rebuild tool dependency snapshots.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      const collectToolDependencySnapshotRowsTask = Cadenza.createUniqueMetaTask(
+        "Collect tool dependency snapshot source rows",
+        (ctx: any) => {
+          let joinedContext: any = { ...ctx };
+          for (const joined of Array.isArray(ctx.joinedContexts)
+            ? ctx.joinedContexts
+            : []) {
+            joinedContext = {
+              ...joinedContext,
+              ...joined,
+            };
+          }
+
+          const serviceName = readString(joinedContext.serviceName);
+          if (!serviceName) {
+            return false;
+          }
+
+          const snapshots = computeToolDependencySnapshotRows(
+            buildToolDependencyGraph({
+              taskToHelperMaps: joinedContext.taskToHelperMaps,
+              helperToHelperMaps: joinedContext.helperToHelperMaps,
+              taskToGlobalMaps: joinedContext.taskToGlobalMaps,
+              helperToGlobalMaps: joinedContext.helperToGlobalMaps,
+            }),
+          );
+
+          return {
+            ...joinedContext,
+            serviceName,
+            __taskToolDependencySnapshotRows: snapshots.taskSnapshots,
+            __helperToolDependencySnapshotRows: snapshots.helperSnapshots,
+          };
+        },
+        "Collects queried direct edge rows and computes transitive tool dependency snapshots.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      const prepareTaskToolDependencySnapshotResetTask = Cadenza.createMetaTask(
+        "Prepare task tool dependency snapshot reset",
+        (ctx) => {
+          const serviceName = readString(ctx?.serviceName);
+          if (!serviceName) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            data: {
+              deleted: true,
+            },
+            queryData: {
+              filter: {
+                service_name: serviceName,
+                deleted: false,
+              },
+              data: {
+                deleted: true,
+              },
+            },
+          };
+        },
+        "Marks existing task tool dependency snapshot rows deleted before reinserting the fresh closure.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      const prepareTaskToolDependencySnapshotInsertTask = Cadenza.createMetaTask(
+        "Prepare task tool dependency snapshot insert",
+        (ctx) => {
+          const rows = normalizeRowArray(ctx?.__taskToolDependencySnapshotRows);
+          if (rows.length === 0) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            data: rows,
+            queryData: {
+              data: rows,
+              onConflict: buildOnConflictUpdate(
+                [
+                  "task_name",
+                  "task_version",
+                  "service_name",
+                  "alias",
+                  "dependency_kind",
+                  "dependency_name",
+                  "dependency_version",
+                  "depth",
+                ],
+                {
+                  deleted: "false",
+                },
+              ),
+            },
+          };
+        },
+        "Builds fresh task_tool_dependency_snapshot rows from computed closure state.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      const prepareHelperToolDependencySnapshotResetTask = Cadenza.createMetaTask(
+        "Prepare helper tool dependency snapshot reset",
+        (ctx) => {
+          const serviceName = readString(ctx?.serviceName);
+          if (!serviceName) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            data: {
+              deleted: true,
+            },
+            queryData: {
+              filter: {
+                service_name: serviceName,
+                deleted: false,
+              },
+              data: {
+                deleted: true,
+              },
+            },
+          };
+        },
+        "Marks existing helper tool dependency snapshot rows deleted before reinserting the fresh closure.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      const prepareHelperToolDependencySnapshotInsertTask = Cadenza.createMetaTask(
+        "Prepare helper tool dependency snapshot insert",
+        (ctx) => {
+          const rows = normalizeRowArray(ctx?.__helperToolDependencySnapshotRows);
+          if (rows.length === 0) {
+            return false;
+          }
+
+          return {
+            ...ctx,
+            data: rows,
+            queryData: {
+              data: rows,
+              onConflict: buildOnConflictUpdate(
+                [
+                  "helper_name",
+                  "helper_version",
+                  "service_name",
+                  "alias",
+                  "dependency_kind",
+                  "dependency_name",
+                  "dependency_version",
+                  "depth",
+                ],
+                {
+                  deleted: "false",
+                },
+              ),
+            },
+          };
+        },
+        "Builds fresh helper_tool_dependency_snapshot rows from computed closure state.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      const helperQueryForSnapshotTask = localHelperQueryTask.clone();
+      const globalQueryForSnapshotTask = localGlobalRegistryQueryTask.clone();
+      const taskToHelperMapQueryForSnapshotTask =
+        localTaskToHelperMapQueryTask.clone();
+      const helperToHelperMapQueryForSnapshotTask =
+        localHelperToHelperMapQueryTask.clone();
+      const taskToGlobalMapQueryForSnapshotTask =
+        localTaskToGlobalMapQueryTask.clone();
+      const helperToGlobalMapQueryForSnapshotTask =
+        localHelperToGlobalMapQueryTask.clone();
+
+      const prepareHelperQueryForSnapshotTask = Cadenza.createMetaTask(
+        "Prepare helper query for tool dependency snapshot refresh",
+        (ctx) => ({
+          ...ctx,
+          __toolDependencySource: "helpers",
+          queryData: {
+            filter: {
+              service_name: readString(ctx?.serviceName),
+              deleted: false,
+            },
+          },
+        }),
+        "Loads helper rows for a service during tool dependency snapshot rebuild.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      const prepareGlobalQueryForSnapshotTask = Cadenza.createMetaTask(
+        "Prepare global query for tool dependency snapshot refresh",
+        (ctx) => ({
+          ...ctx,
+          __toolDependencySource: "globals",
+          queryData: {
+            filter: {
+              service_name: readString(ctx?.serviceName),
+              deleted: false,
+            },
+          },
+        }),
+        "Loads global_registry rows for a service during tool dependency snapshot rebuild.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      const prepareTaskToHelperMapQueryForSnapshotTask = Cadenza.createMetaTask(
+        "Prepare task-to-helper query for tool dependency snapshot refresh",
+        (ctx) => ({
+          ...ctx,
+          __toolDependencySource: "taskToHelperMaps",
+          queryData: {
+            filter: {
+              service_name: readString(ctx?.serviceName),
+              deleted: false,
+            },
+          },
+        }),
+        "Loads task_to_helper_map rows for a service during tool dependency snapshot rebuild.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      const prepareHelperToHelperMapQueryForSnapshotTask = Cadenza.createMetaTask(
+        "Prepare helper-to-helper query for tool dependency snapshot refresh",
+        (ctx) => ({
+          ...ctx,
+          __toolDependencySource: "helperToHelperMaps",
+          queryData: {
+            filter: {
+              service_name: readString(ctx?.serviceName),
+              deleted: false,
+            },
+          },
+        }),
+        "Loads helper_to_helper_map rows for a service during tool dependency snapshot rebuild.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      const prepareTaskToGlobalMapQueryForSnapshotTask = Cadenza.createMetaTask(
+        "Prepare task-to-global query for tool dependency snapshot refresh",
+        (ctx) => ({
+          ...ctx,
+          __toolDependencySource: "taskToGlobalMaps",
+          queryData: {
+            filter: {
+              service_name: readString(ctx?.serviceName),
+              deleted: false,
+            },
+          },
+        }),
+        "Loads task_to_global_map rows for a service during tool dependency snapshot rebuild.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      const prepareHelperToGlobalMapQueryForSnapshotTask = Cadenza.createMetaTask(
+        "Prepare helper-to-global query for tool dependency snapshot refresh",
+        (ctx) => ({
+          ...ctx,
+          __toolDependencySource: "helperToGlobalMaps",
+          queryData: {
+            filter: {
+              service_name: readString(ctx?.serviceName),
+              deleted: false,
+            },
+          },
+        }),
+        "Loads helper_to_global_map rows for a service during tool dependency snapshot rebuild.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      );
+
+      executeToolDependencySnapshotRefreshTask.then(
+        prepareHelperQueryForSnapshotTask,
+        prepareGlobalQueryForSnapshotTask,
+        prepareTaskToHelperMapQueryForSnapshotTask,
+        prepareHelperToHelperMapQueryForSnapshotTask,
+        prepareTaskToGlobalMapQueryForSnapshotTask,
+        prepareHelperToGlobalMapQueryForSnapshotTask,
+      );
+      prepareHelperQueryForSnapshotTask.then(helperQueryForSnapshotTask);
+      prepareGlobalQueryForSnapshotTask.then(globalQueryForSnapshotTask);
+      prepareTaskToHelperMapQueryForSnapshotTask.then(
+        taskToHelperMapQueryForSnapshotTask,
+      );
+      prepareHelperToHelperMapQueryForSnapshotTask.then(
+        helperToHelperMapQueryForSnapshotTask,
+      );
+      prepareTaskToGlobalMapQueryForSnapshotTask.then(
+        taskToGlobalMapQueryForSnapshotTask,
+      );
+      prepareHelperToGlobalMapQueryForSnapshotTask.then(
+        helperToGlobalMapQueryForSnapshotTask,
+      );
+      helperQueryForSnapshotTask.then(normalizeToolDependencyQueryRowsTask);
+      globalQueryForSnapshotTask.then(normalizeToolDependencyQueryRowsTask);
+      taskToHelperMapQueryForSnapshotTask.then(normalizeToolDependencyQueryRowsTask);
+      helperToHelperMapQueryForSnapshotTask.then(
+        normalizeToolDependencyQueryRowsTask,
+      );
+      taskToGlobalMapQueryForSnapshotTask.then(normalizeToolDependencyQueryRowsTask);
+      helperToGlobalMapQueryForSnapshotTask.then(
+        normalizeToolDependencyQueryRowsTask,
+      );
+      normalizeToolDependencyQueryRowsTask.then(collectToolDependencySnapshotRowsTask);
+      collectToolDependencySnapshotRowsTask.then(
+        prepareTaskToolDependencySnapshotResetTask,
+        prepareHelperToolDependencySnapshotResetTask,
+      );
+      prepareTaskToolDependencySnapshotResetTask.then(
+        localTaskToolDependencySnapshotUpdateTask,
+      );
+      prepareHelperToolDependencySnapshotResetTask.then(
+        localHelperToolDependencySnapshotUpdateTask,
+      );
+      localTaskToolDependencySnapshotUpdateTask.then(
+        prepareTaskToolDependencySnapshotInsertTask,
+      );
+      localHelperToolDependencySnapshotUpdateTask.then(
+        prepareHelperToolDependencySnapshotInsertTask,
+      );
+      prepareTaskToolDependencySnapshotInsertTask.then(
+        localTaskToolDependencySnapshotInsertTask,
+      );
+      prepareHelperToolDependencySnapshotInsertTask.then(
+        localHelperToolDependencySnapshotInsertTask,
+      );
+
+      localHelperInsertTask?.then(requestToolDependencySnapshotRefreshTask);
+      localGlobalRegistryInsertTask?.then(requestToolDependencySnapshotRefreshTask);
+      localTaskToHelperMapInsertTask?.then(requestToolDependencySnapshotRefreshTask);
+      localHelperToHelperMapInsertTask?.then(
+        requestToolDependencySnapshotRefreshTask,
+      );
+      localTaskToGlobalMapInsertTask?.then(requestToolDependencySnapshotRefreshTask);
+      localHelperToGlobalMapInsertTask?.then(
+        requestToolDependencySnapshotRefreshTask,
+      );
+
+      return true;
+    };
+
+    ensureAuthorityToolDependencySnapshotTasks();
+    scheduleLocalEnsureRetry(ensureAuthorityToolDependencySnapshotTasks, 25);
+    scheduleLocalEnsureRetry(ensureAuthorityToolDependencySnapshotTasks, 250);
+    scheduleLocalEnsureRetry(ensureAuthorityToolDependencySnapshotTasks, 1500);
 
     const ensureAuthorityBootstrapRegistrationTasks = () => {
       const localServiceInstanceInsertTask =

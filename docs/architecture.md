@@ -31,6 +31,7 @@ Current schema is organized around these domains:
 
 - service registry: `service`, `service_instance`, dependencies/relationships
 - graph primitives: `task`, `routine`, maps, signal registry, intent maps
+- tool structure: `helper`, `global_registry`, tool dependency maps, and tool dependency snapshots
 - execution telemetry: traces, routine executions, task executions, directional edges
 - actor metadata:
   - `actor`
@@ -95,3 +96,47 @@ Strict write-through runtime path (v1):
 - This repo validates and persists by table contract.
 
 Contract drift between emitted fields and table fields will break insert/update flows.
+
+## Layer-Scoped Tools Persistence Contract
+
+### Structural definition tables
+
+- `helper`
+- `global_registry`
+
+These tables store the service-owned definition rows published by `service_manifest`.
+
+### Direct dependency tables
+
+- `task_to_helper_map`
+- `helper_to_helper_map`
+- `task_to_global_map`
+- `helper_to_global_map`
+
+These store only declared direct dependencies and preserve alias identity.
+
+### Snapshot closure tables
+
+- `task_tool_dependency_snapshot`
+- `helper_tool_dependency_snapshot`
+
+These rows are rebuilt per service from the direct dependency tables and store:
+
+- owner identity
+- alias
+- dependency kind (`helper` or `global`)
+- dependency identity
+- traversal depth
+
+### Signal trigger contracts (tools)
+
+- `global.meta.graph_metadata.helper_created` -> `helper`
+- `global.meta.graph_metadata.helper_updated` -> `helper`
+- `global.meta.graph_metadata.global_created` -> `global_registry`
+- `global.meta.graph_metadata.global_updated` -> `global_registry`
+- `global.meta.graph_metadata.task_helper_associated` -> `task_to_helper_map`
+- `global.meta.graph_metadata.helper_helper_associated` -> `helper_to_helper_map`
+- `global.meta.graph_metadata.task_global_associated` -> `task_to_global_map`
+- `global.meta.graph_metadata.helper_global_associated` -> `helper_to_global_map`
+
+After direct rows change, authority rebuilds the snapshot closure tables for the affected service.

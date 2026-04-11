@@ -16,10 +16,10 @@ The core is suitable for local dynamic workflows using tasks and signals. But th
 
 ## Installation
 
-Install the core package via npm:
+Install the DB package via npm:
 
 ```bash
-npm install @cadenza.io/service
+npm install @cadenza.io/cadenza-db
 ```
 
 ## Usage
@@ -138,6 +138,33 @@ Design constraints:
 - Actor type classification is `is_meta` (no `kind` column).
 - Runtime-only objects are not persisted.
 - Durable state persists through `actor_session_state.durable_state`.
+
+## Layer-Scoped Tools Persistence
+
+`cadenza-db` now persists helper/global structural data and tool dependency closures.
+
+Structural tables:
+
+- `helper`
+- `global_registry`
+
+Direct dependency maps:
+
+- `task_to_helper_map`
+- `helper_to_helper_map`
+- `task_to_global_map`
+- `helper_to_global_map`
+
+Transitive snapshot tables:
+
+- `task_tool_dependency_snapshot`
+- `helper_tool_dependency_snapshot`
+
+Key contract rules:
+
+- direct rows preserve the declared alias so runtime-visible tool keys stay reconstructable
+- snapshot rows are materialized from direct edges and stay out of `service_manifest`
+- helper/global payloads remain structural metadata, not routing membership
 
 ## Contributing
 Contributions are welcome! Please fork the repo, create a branch, and submit a PR. Follow the code style and add tests for new features.

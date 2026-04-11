@@ -60,6 +60,21 @@ describe("CadenzaDB metadata trigger idempotency", () => {
         default: null,
       }),
     );
+    expect(capturedSchema.tables.service_instance_lease.fields.status).toEqual(
+      expect.objectContaining({
+        type: "varchar",
+        default: "active",
+      }),
+    );
+    expect(
+      capturedSchema.tables.service_instance_lease.fields.service_instance_id,
+    ).toEqual(
+      expect.objectContaining({
+        type: "uuid",
+        primary: true,
+        references: "service_instance(uuid)",
+      }),
+    );
     expect(
       capturedSchema.tables.database_service.customSignals.triggers.insert,
     ).toEqual(
@@ -228,7 +243,7 @@ describe("CadenzaDB metadata trigger idempotency", () => {
     CadenzaDB.createCadenzaDBService();
 
     expect(capturedSchema).toBeTruthy();
-    expect(capturedSchema.version).toBe(5);
+    expect(capturedSchema.version).toBe(7);
     expect(capturedSchema.migrationPolicy).toEqual(
       expect.objectContaining({
         adoptExistingVersion: 1,
@@ -240,6 +255,7 @@ describe("CadenzaDB metadata trigger idempotency", () => {
       capturedSchema.tables.task_execution.fields.previous_task_execution_ids,
     ).toBeTruthy();
     expect(capturedSchema.tables.task_execution_map).toBeUndefined();
+    expect(capturedSchema.tables.service_instance_lease).toBeTruthy();
     expect(capturedSchema.tables.service_manifest).toBeTruthy();
     expect(
       capturedSchema.tables.service_manifest.fields.service_instance_id.references,
@@ -282,6 +298,10 @@ describe("CadenzaDB metadata trigger idempotency", () => {
         expect.objectContaining({
           version: 5,
           name: "widen-structural-name-columns",
+        }),
+        expect.objectContaining({
+          version: 7,
+          name: "service-instance-leases",
         }),
       ]),
     );
