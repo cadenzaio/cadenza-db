@@ -1,3 +1,10 @@
+## [2.12.1](https://github.com/cadenzaio/cadenza-db/compare/v2.12.0...v2.12.1) (2026-04-13)
+
+
+### Bug Fixes
+
+* harden authority lease recovery and diagnostics ([86a03ad](https://github.com/cadenzaio/cadenza-db/commit/86a03adbae002eb36e8bc5dfd40b423fa44ca441))
+
 # [2.12.0](https://github.com/cadenzaio/cadenza-db/compare/v2.11.3...v2.12.0) (2026-04-11)
 
 
