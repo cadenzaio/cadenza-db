@@ -9,6 +9,7 @@ import Cadenza, {
   normalizeServiceManifestSnapshot,
   selectLatestServiceManifestSnapshots,
 } from "@cadenza.io/service";
+import v8 from "node:v8";
 import ExecutionPersistenceCoordinator from "./execution/ExecutionPersistenceCoordinator";
 import { registerAuthorityRuntimeStatusTasks } from "./runtimeStatusAuthority";
 import {
@@ -82,8 +83,14 @@ const RUNTIME_DIAGNOSTICS_ENABLED =
 const RUNTIME_DIAGNOSTICS_INTERVAL_MS = 15000;
 const META_RETIRE_SUPERSEDED_SERVICE_INSTANCE =
   "meta.cadenza_db.retire_superseded_service_instance";
+const META_RETIRE_SUPERSEDED_SERVICE_INSTANCE_LEASE =
+  "meta.cadenza_db.retire_superseded_service_instance_lease";
 const META_RETIRE_SUPERSEDED_SERVICE_INSTANCE_TRANSPORT =
   "meta.cadenza_db.retire_superseded_service_instance_transport";
+const META_SERVICE_INSTANCE_LEASE_CONSISTENCY_SWEEP_REQUESTED =
+  "meta.cadenza_db.service_instance_lease_consistency_sweep_requested";
+const META_SERVICE_INSTANCE_LEASE_CONSISTENCY_UPDATES_READY =
+  "meta.cadenza_db.service_instance_lease_consistency_updates_ready";
 const META_EVALUATE_TRANSPORTLESS_SERVICE_INSTANCE =
   "meta.cadenza_db.evaluate_transportless_service_instance";
 const authorityRegistryProjectionAccumulator = new Map<
@@ -147,6 +154,287 @@ function logLocalSyncDebug(event: string, payload: Record<string, unknown>) {
   console.log(`${SYNC_DEBUG_PREFIX} ${event}`, payload);
 }
 
+function estimateJsonBytes(value: unknown): number | null {
+  try {
+    const text = JSON.stringify(value);
+    return typeof text === "string" ? Buffer.byteLength(text, "utf8") : null;
+  } catch {
+    return null;
+  }
+}
+
+function estimateArrayBytes<T>(
+  values: T[] | undefined,
+  valueMapper?: (value: T, index: number) => unknown,
+): number | null {
+  if (!values) {
+    return null;
+  }
+
+  return estimateJsonBytes(
+    values.map((value, index) => (valueMapper ? valueMapper(value, index) : value)),
+  );
+}
+
+function estimateMapBytes<K, V>(
+  map: Map<K, V> | undefined,
+  valueMapper?: (value: V, key: K) => unknown,
+): number | null {
+  if (!map) {
+    return null;
+  }
+
+  return estimateJsonBytes(
+    Array.from(map.entries()).map(([key, value]) => [
+      key,
+      valueMapper ? valueMapper(value, key) : value,
+    ]),
+  );
+}
+
+function estimateSetMapBytes(
+  map: Map<string, Set<string>> | undefined,
+): number | null {
+  if (!map) {
+    return null;
+  }
+
+  return estimateJsonBytes(
+    Array.from(map.entries()).map(([key, values]) => [key, Array.from(values)]),
+  );
+}
+
+function estimateObserverTaskMapBytes(
+  map:
+    | Map<
+        string,
+        {
+          tasks?: Set<{ name?: string }>;
+          registered?: boolean;
+        }
+      >
+    | undefined,
+): number | null {
+  if (!map) {
+    return null;
+  }
+
+  return estimateJsonBytes(
+    Array.from(map.entries()).map(([key, observer]) => ({
+      key,
+      registered: observer.registered ?? false,
+      tasks: Array.from(observer.tasks ?? []).map((task) => task.name ?? null),
+    })),
+  );
+}
+
+function estimateProjectionAccumulatorBytes(
+  accumulator: Map<string, { updatedAt: number; payload?: Record<string, unknown> } | Record<string, unknown>>,
+): number | null {
+  return estimateJsonBytes(
+    Array.from(accumulator.entries()).map(([key, value]) => ({
+      key,
+      value,
+    })),
+  );
+}
+
+function summarizeGraphLayerChain(layer: unknown) {
+  const summary = {
+    layerCount: 0,
+    nodeCount: 0,
+    unprocessedNodeCount: 0,
+    waitingNodeCount: 0,
+    processingNodeCount: 0,
+    contextBytes: 0,
+    metadataBytes: 0,
+    topTaskNames: [] as Array<{ taskName: string | null; count: number }>,
+    topUnprocessedTaskNames: [] as Array<{ taskName: string | null; count: number }>,
+    processingTaskNames: [] as Array<{ taskName: string | null; count: number }>,
+  };
+  const taskNameCounts = new Map<string | null, number>();
+  const unprocessedTaskNameCounts = new Map<string | null, number>();
+  const processingTaskNameCounts = new Map<string | null, number>();
+
+  const seenLayers = new Set<unknown>();
+  let current = layer as
+    | {
+        nodes?: Array<{
+          context?: {
+            getFullContext?: () => unknown;
+            getMetadata?: () => unknown;
+          };
+        }>;
+        waitingNodes?: unknown[];
+        processingNodes?: Set<unknown>;
+        getNext?: () => unknown;
+      }
+    | undefined;
+
+  while (current && !seenLayers.has(current)) {
+    seenLayers.add(current);
+    summary.layerCount += 1;
+    summary.nodeCount += current.nodes?.length ?? 0;
+    summary.waitingNodeCount += current.waitingNodes?.length ?? 0;
+    summary.processingNodeCount += current.processingNodes?.size ?? 0;
+
+    for (const node of current.nodes ?? []) {
+      summary.contextBytes +=
+        estimateJsonBytes(node.context?.getFullContext?.()) ?? 0;
+      summary.metadataBytes += estimateJsonBytes(node.context?.getMetadata?.()) ?? 0;
+      const taskName =
+        (node as { task?: { name?: string } }).task?.name ?? null;
+      taskNameCounts.set(taskName, (taskNameCounts.get(taskName) ?? 0) + 1);
+      const processed =
+        typeof (node as { isProcessed?: () => boolean }).isProcessed === "function"
+          ? (node as { isProcessed: () => boolean }).isProcessed()
+          : true;
+      if (!processed) {
+        summary.unprocessedNodeCount += 1;
+        unprocessedTaskNameCounts.set(
+          taskName,
+          (unprocessedTaskNameCounts.get(taskName) ?? 0) + 1,
+        );
+      }
+    }
+
+    for (const processingNode of current.processingNodes ?? []) {
+      const taskName =
+        (processingNode as { task?: { name?: string } }).task?.name ?? null;
+      processingTaskNameCounts.set(
+        taskName,
+        (processingTaskNameCounts.get(taskName) ?? 0) + 1,
+      );
+    }
+
+    current = current.getNext?.() as typeof current;
+  }
+
+  summary.topTaskNames = Array.from(taskNameCounts.entries())
+    .map(([taskName, count]) => ({ taskName, count }))
+    .sort((left, right) => right.count - left.count)
+    .slice(0, 12);
+  summary.topUnprocessedTaskNames = Array.from(unprocessedTaskNameCounts.entries())
+    .map(([taskName, count]) => ({ taskName, count }))
+    .sort((left, right) => right.count - left.count)
+    .slice(0, 12);
+  summary.processingTaskNames = Array.from(processingTaskNameCounts.entries())
+    .map(([taskName, count]) => ({ taskName, count }))
+    .sort((left, right) => right.count - left.count)
+    .slice(0, 12);
+
+  return summary;
+}
+
+function summarizeRunnerState(runner: unknown) {
+  const graphRunner = runner as
+    | {
+        currentRun?: { graph?: unknown };
+        strategy?: {
+          graphBuilder?: {
+            graph?: unknown;
+            layers?: unknown[];
+          };
+        };
+      }
+    | undefined;
+
+  const currentRunGraphSummary = summarizeGraphLayerChain(
+    graphRunner?.currentRun?.graph,
+  );
+  const builderGraphSummary = summarizeGraphLayerChain(
+    graphRunner?.strategy?.graphBuilder?.graph,
+  );
+
+  return {
+    builderLayerCount: graphRunner?.strategy?.graphBuilder?.layers?.length ?? 0,
+    currentRunGraph: currentRunGraphSummary,
+    builderGraph: builderGraphSummary,
+  };
+}
+
+function summarizeTaskForRuntimeDiagnostics(task: unknown) {
+  const record = task as {
+    name?: string;
+    version?: number;
+    description?: string;
+    layerIndex?: number;
+    concurrency?: number;
+    timeout?: number;
+    retryCount?: number;
+    retryDelay?: number;
+    retryDelayMax?: number;
+    retryDelayFactor?: number;
+    validateInputContext?: boolean;
+    validateOutputContext?: boolean;
+    inputContextSchema?: unknown;
+    outputContextSchema?: unknown;
+    isMeta?: boolean;
+    isSubMeta?: boolean;
+    isDeputy?: boolean;
+    isSignal?: boolean;
+    isUnique?: boolean;
+    isHidden?: boolean;
+    isEphemeral?: boolean;
+    throttled?: boolean;
+    nextTasks?: Set<{ name?: string }>;
+    predecessorTasks?: Set<{ name?: string }>;
+    observedSignals?: Set<string>;
+    emitsSignals?: Set<string>;
+    signalsToEmitAfter?: Set<string>;
+    signalsToEmitOnFail?: Set<string>;
+    handlesIntents?: Set<string>;
+    inquiresIntents?: Set<string>;
+    helperAliases?: Map<string, string>;
+    globalAliases?: Map<string, string>;
+  };
+
+  return {
+    name: record.name ?? null,
+    version: record.version ?? 1,
+    description: record.description ?? "",
+    layerIndex: record.layerIndex ?? 0,
+    concurrency: record.concurrency ?? 0,
+    timeout: record.timeout ?? 0,
+    retryCount: record.retryCount ?? 0,
+    retryDelay: record.retryDelay ?? 0,
+    retryDelayMax: record.retryDelayMax ?? 0,
+    retryDelayFactor: record.retryDelayFactor ?? 1,
+    validateInputContext: record.validateInputContext ?? false,
+    validateOutputContext: record.validateOutputContext ?? false,
+    inputContextSchema: record.inputContextSchema ?? null,
+    outputContextSchema: record.outputContextSchema ?? null,
+    isMeta: record.isMeta ?? false,
+    isSubMeta: record.isSubMeta ?? false,
+    isDeputy: record.isDeputy ?? false,
+    isSignal: record.isSignal ?? false,
+    isUnique: record.isUnique ?? false,
+    isHidden: record.isHidden ?? false,
+    isEphemeral: record.isEphemeral ?? false,
+    throttled: record.throttled ?? false,
+    nextTaskNames: Array.from(record.nextTasks ?? []).map(
+      (nextTask) => nextTask.name ?? null,
+    ),
+    predecessorTaskNames: Array.from(record.predecessorTasks ?? []).map(
+      (predecessorTask) => predecessorTask.name ?? null,
+    ),
+    signals: {
+      observed: Array.from(record.observedSignals ?? []),
+      emits: Array.from(record.emitsSignals ?? []),
+      emitsAfter: Array.from(record.signalsToEmitAfter ?? []),
+      emitsOnFail: Array.from(record.signalsToEmitOnFail ?? []),
+    },
+    intents: {
+      handles: Array.from(record.handlesIntents ?? []),
+      inquires: Array.from(record.inquiresIntents ?? []),
+    },
+    tools: {
+      helpers: Object.fromEntries(record.helperAliases ?? []),
+      globals: Object.fromEntries(record.globalAliases ?? []),
+    },
+  };
+}
+
 function logCanonicalizationTrace(
   event: string,
   payload: Record<string, unknown>,
@@ -182,35 +470,96 @@ function logRuntimeDiagnostics() {
 
   try {
     const actors = Cadenza.getAllActors();
+    const cadenzaStatics = Cadenza as unknown as {
+      taskCache?: Map<string, unknown>;
+      routineCache?: Map<string, unknown>;
+      actorCache?: Map<string, unknown>;
+      helperCache?: Map<string, unknown>;
+      globalCache?: Map<string, unknown>;
+    };
     const serviceRegistry = Cadenza.serviceRegistry as unknown as {
       instances?: Map<string, unknown[]>;
       remoteRoutesByKey?: Map<string, unknown>;
       remoteSignals?: Map<string, Set<string>>;
       remoteIntents?: Map<string, Set<string>>;
       deputies?: Map<string, unknown[]>;
+      remoteIntentDeputiesByKey?: Map<
+        string,
+        {
+          localTaskName?: string;
+          localTask?: {
+            name?: string;
+            export?: () => unknown;
+          };
+        }
+      >;
     };
     const graphRegistry = Cadenza.registry as unknown as {
       tasks?: Map<string, unknown>;
       routines?: Map<string, unknown>;
     };
+    const signalBroker = Cadenza.signalBroker as unknown as {
+      signalObservers?: Map<
+        string,
+        {
+          tasks?: Set<{ name?: string }>;
+          registered?: boolean;
+        }
+      >;
+      emittedSignalsRegistry?: Set<string>;
+      signalMetadataRegistry?: Map<string, unknown>;
+      passiveSignalListeners?: Map<string, unknown>;
+      throttleEmitters?: Map<string, unknown>;
+      throttleQueues?: Map<string, unknown>;
+      scheduledBuckets?: Map<string, unknown>;
+      debouncedEmitters?: Map<string, unknown>;
+      strategyData?: Map<string, Map<string, { signal: string; contexts: unknown[] }>>;
+      strategyTimers?: Map<string, unknown>;
+      isStrategyFlushing?: Map<string, boolean>;
+    };
+    const runnerState = summarizeRunnerState(Cadenza.runner);
+    const metaRunnerState = summarizeRunnerState(Cadenza.metaRunner);
     const inquiryBroker = (Cadenza as unknown as {
-      inquiryBroker?: { intents?: Map<string, unknown> };
+      inquiryBroker?: {
+        intents?: Map<string, unknown>;
+        inquiryObservers?: Map<
+          string,
+          {
+            tasks?: Set<{ name?: string }>;
+            registered?: boolean;
+          }
+        >;
+      };
     }).inquiryBroker;
     const actorSummaries = actors
       .map((actor) => {
         const actorWithKeys = actor as unknown as {
           listActorKeys?: () => string[];
+          getRuntimeState?: (actorKey?: string) => unknown;
         };
         const actorKeys =
           typeof actorWithKeys.listActorKeys === "function"
             ? actorWithKeys.listActorKeys()
             : [];
+        const runtimeStateBytes = actorKeys.reduce((total, actorKey) => {
+          if (typeof actorWithKeys.getRuntimeState !== "function") {
+            return total;
+          }
+
+          return (
+            total + (estimateJsonBytes(actorWithKeys.getRuntimeState(actorKey)) ?? 0)
+          );
+        }, 0);
         return {
           actorName: actor.spec.name,
           actorKeyCount: actorKeys.length,
+          runtimeStateBytes,
         };
       })
-      .sort((left, right) => right.actorKeyCount - left.actorKeyCount)
+      .sort((left, right) =>
+        right.runtimeStateBytes - left.runtimeStateBytes ||
+        right.actorKeyCount - left.actorKeyCount,
+      )
       .slice(0, 10);
 
     const totalActorKeys = actors.reduce(
@@ -228,6 +577,92 @@ function logRuntimeDiagnostics() {
       0,
     );
     const memory = process.memoryUsage();
+    const graphTaskSummaries = Array.from(graphRegistry.tasks?.values() ?? []).map(
+      (task) => summarizeTaskForRuntimeDiagnostics(task),
+    );
+    const graphTaskBytes = estimateJsonBytes(graphTaskSummaries);
+    const graphRoutineBytes = estimateJsonBytes(
+      Array.from(graphRegistry.routines?.values() ?? []).map((routine) => {
+        const record = routine as {
+          name?: string;
+          tasks?: Iterable<{ name?: string }>;
+        };
+        return {
+          name: record.name ?? null,
+          taskNames: Array.from(record.tasks ?? []).map(
+            (task) => task.name ?? null,
+          ),
+        };
+      }),
+    );
+    const topTaskExports = Array.from(graphRegistry.tasks?.values() ?? [])
+      .map((task) => {
+        const record = task as {
+          name?: string;
+          nextTasks?: Set<unknown>;
+          predecessorTasks?: Set<unknown>;
+          observedSignals?: Set<unknown>;
+          emitsSignals?: Set<unknown>;
+          signalsToEmitAfter?: Set<unknown>;
+          signalsToEmitOnFail?: Set<unknown>;
+          handlesIntents?: Set<unknown>;
+          inquiresIntents?: Set<unknown>;
+        };
+        const summarized = summarizeTaskForRuntimeDiagnostics(task);
+        return {
+          taskName: record.name ?? null,
+          exportBytes: estimateJsonBytes(summarized) ?? 0,
+          nextTaskCount: record.nextTasks?.size ?? 0,
+          predecessorTaskCount: record.predecessorTasks?.size ?? 0,
+          observedSignalCount: record.observedSignals?.size ?? 0,
+          emitsSignalCount: record.emitsSignals?.size ?? 0,
+          emitsAfterCount: record.signalsToEmitAfter?.size ?? 0,
+          emitsOnFailCount: record.signalsToEmitOnFail?.size ?? 0,
+          handlesIntentCount: record.handlesIntents?.size ?? 0,
+          inquiresIntentCount: record.inquiresIntents?.size ?? 0,
+        };
+      })
+      .sort((left, right) => right.exportBytes - left.exportBytes)
+      .slice(0, 12);
+    const serviceInstanceHealthBytes = estimateJsonBytes(
+      serviceRegistry.instances
+        ? Array.from(serviceRegistry.instances.entries()).flatMap(
+            ([serviceName, instances]) =>
+              (instances ?? []).map((instance) => {
+                const record = instance as Record<string, unknown>;
+                return {
+                  serviceName,
+                  uuid:
+                    typeof record.uuid === "string" ? record.uuid : null,
+                  health:
+                    record.health && typeof record.health === "object"
+                      ? record.health
+                      : {},
+                };
+              }),
+          )
+        : [],
+    );
+    const remoteIntentDeputyTaskBytes = estimateJsonBytes(
+      Array.from(serviceRegistry.remoteIntentDeputiesByKey?.values() ?? []).map(
+        (descriptor) => {
+          const task = descriptor.localTask;
+          return task
+            ? summarizeTaskForRuntimeDiagnostics(task)
+            : {
+                localTaskName: descriptor.localTaskName ?? null,
+              };
+        },
+      ),
+    );
+    const heapSpaceBreakdown = v8.getHeapSpaceStatistics().map((space) => ({
+      spaceName: space.space_name,
+      spaceUsedSize: space.space_used_size,
+      spaceAvailableSize: space.space_available_size,
+      spaceSize: space.space_size,
+      physicalSpaceSize: space.physical_space_size,
+    }));
+    const heapStatistics = v8.getHeapStatistics();
 
     console.log("[CADENZA_DB_RUNTIME_DIAGNOSTICS]", {
       rssBytes: memory.rss,
@@ -256,10 +691,126 @@ function logRuntimeDiagnostics() {
           0,
         ) ?? 0,
       deputyGroupCount: serviceRegistry.deputies?.size ?? 0,
+      cadenzaCacheCounts: {
+        taskCache: cadenzaStatics.taskCache?.size ?? 0,
+        routineCache: cadenzaStatics.routineCache?.size ?? 0,
+        actorCache: cadenzaStatics.actorCache?.size ?? 0,
+        helperCache: cadenzaStatics.helperCache?.size ?? 0,
+        globalCache: cadenzaStatics.globalCache?.size ?? 0,
+      },
+      cadenzaCacheBytes: {
+        taskCache: estimateMapBytes(cadenzaStatics.taskCache, (task) =>
+          summarizeTaskForRuntimeDiagnostics(task),
+        ),
+        routineCache: estimateMapBytes(cadenzaStatics.routineCache),
+        actorCache: estimateMapBytes(cadenzaStatics.actorCache),
+        helperCache: estimateMapBytes(cadenzaStatics.helperCache),
+        globalCache: estimateMapBytes(cadenzaStatics.globalCache),
+      },
+      graphRegistryBytes: {
+        tasks: graphTaskBytes,
+        routines: graphRoutineBytes,
+        remoteIntentDeputyTasks: remoteIntentDeputyTaskBytes,
+        topTaskExports,
+      },
+      inquiryBrokerBytes: {
+        intents: estimateMapBytes(inquiryBroker?.intents),
+        observers: estimateObserverTaskMapBytes(inquiryBroker?.inquiryObservers),
+      },
+      signalBrokerBytes: {
+        signalObservers: estimateObserverTaskMapBytes(signalBroker?.signalObservers),
+        emittedSignals: estimateArrayBytes(
+          Array.from(signalBroker?.emittedSignalsRegistry ?? []),
+        ),
+        signalMetadata: estimateMapBytes(signalBroker?.signalMetadataRegistry),
+        passiveSignalListeners: estimateMapBytes(signalBroker?.passiveSignalListeners),
+        throttleEmitters: estimateMapBytes(signalBroker?.throttleEmitters),
+        throttleQueues: estimateMapBytes(signalBroker?.throttleQueues),
+        scheduledBuckets: estimateMapBytes(signalBroker?.scheduledBuckets),
+        debouncedEmitters: estimateMapBytes(signalBroker?.debouncedEmitters),
+        strategyData: estimateMapBytes(signalBroker?.strategyData, (strategyMap) =>
+          Array.from(strategyMap.entries()).map(([bucketKey, bucket]) => ({
+            bucketKey,
+            signal: bucket.signal,
+            contextCount: bucket.contexts.length,
+          })),
+        ),
+        strategyTimers: estimateMapBytes(signalBroker?.strategyTimers),
+        strategyFlushing: estimateMapBytes(signalBroker?.isStrategyFlushing),
+      },
+      serviceRegistryBytes: {
+        instances: estimateMapBytes(serviceRegistry.instances),
+        instanceHealth: serviceInstanceHealthBytes,
+        remoteRoutes: estimateMapBytes(serviceRegistry.remoteRoutesByKey),
+        remoteSignals: estimateSetMapBytes(serviceRegistry.remoteSignals),
+        remoteIntents: estimateSetMapBytes(serviceRegistry.remoteIntents),
+        deputies: estimateMapBytes(serviceRegistry.deputies),
+        remoteIntentDeputies:
+          serviceRegistry.remoteIntentDeputiesByKey?.size ?? 0,
+      },
+      projectionState: {
+        pendingAuthorityRegistryProjectionIds:
+          pendingAuthorityRegistryProjectionIds.length,
+        activeAuthorityRegistryProjectionId,
+        authorityRegistryProjectionAccumulatorSize:
+          authorityRegistryProjectionAccumulator.size,
+        authorityRegistryProjectionAccumulatorBytes:
+          estimateProjectionAccumulatorBytes(
+            authorityRegistryProjectionAccumulator as Map<
+              string,
+              { updatedAt: number; payload?: Record<string, unknown> } | Record<string, unknown>
+            >,
+          ),
+        authorityRegistryProjectionPayloadsSize:
+          authorityRegistryProjectionPayloads.size,
+        authorityRegistryProjectionPayloadsBytes:
+          estimateProjectionAccumulatorBytes(
+            authorityRegistryProjectionPayloads as Map<
+              string,
+              { updatedAt: number; payload?: Record<string, unknown> } | Record<string, unknown>
+            >,
+          ),
+        manifestAssociationProjectionAccumulatorSize:
+          manifestAssociationProjectionAccumulator.size,
+        manifestAssociationProjectionAccumulatorBytes:
+          estimateProjectionAccumulatorBytes(
+            manifestAssociationProjectionAccumulator as Map<
+              string,
+              { updatedAt: number; payload?: Record<string, unknown> } | Record<string, unknown>
+            >,
+          ),
+      },
+      runnerState: {
+        runner: runnerState,
+        metaRunner: metaRunnerState,
+      },
       actorCount: actors.length,
       totalActorKeys,
       topActors: actorSummaries,
+      v8: {
+        totalHeapSize: heapStatistics.total_heap_size,
+        totalPhysicalSize: heapStatistics.total_physical_size,
+        totalAvailableSize: heapStatistics.total_available_size,
+        usedHeapSize: heapStatistics.used_heap_size,
+        heapSizeLimit: heapStatistics.heap_size_limit,
+        mallocedMemory: heapStatistics.malloced_memory,
+        externalMemory: heapStatistics.external_memory,
+        nativeContexts: heapStatistics.number_of_native_contexts,
+        detachedContexts: heapStatistics.number_of_detached_contexts,
+        heapSpaces: heapSpaceBreakdown,
+      },
     });
+    console.log(
+      "[CADENZA_DB_RUNTIME_DIAGNOSTICS_TOP_TASK_EXPORTS]",
+      JSON.stringify(topTaskExports),
+    );
+    console.log(
+      "[CADENZA_DB_RUNTIME_DIAGNOSTICS_RUNNER_STATE]",
+      JSON.stringify({
+        runner: runnerState,
+        metaRunner: metaRunnerState,
+      }),
+    );
 
     Cadenza.signalBroker?.logMemoryFootprint("cadenza-db");
   } catch (error) {
@@ -497,6 +1048,64 @@ function resolveLocalSyncQueryTask(tableName: string) {
   return (
     Cadenza.get(`Query ${tableName}`) ??
     Cadenza.get(buildLegacyLocalSyncQueryTaskName(tableName))
+  );
+}
+
+export function resolveDefaultLocalCadenzaDBQueryIntent(task: {
+  name?: string;
+  handlesIntents?: Iterable<string>;
+}) {
+  const intentNames = Array.from(task?.handlesIntents ?? []);
+  const defaultQueryIntentNames = intentNames.filter((intentName) =>
+    intentName.startsWith("query-pg-"),
+  );
+
+  if (defaultQueryIntentNames.length === 1) {
+    return defaultQueryIntentNames[0];
+  }
+
+  if (defaultQueryIntentNames.length === 0 && intentNames.length === 1) {
+    return intentNames[0];
+  }
+
+  throw new Error(
+    `Unable to resolve default local CadenzaDB query intent for '${task?.name ?? "unknown query task"}'.`,
+  );
+}
+
+function createLocalCadenzaDBQueryInquiryTask(
+  name: string,
+  queryTask: {
+    name?: string;
+    handlesIntents?: Iterable<string>;
+  },
+  description: string,
+) {
+  const inquiryIntent = resolveDefaultLocalCadenzaDBQueryIntent(queryTask);
+
+  return Cadenza.createMetaTask(
+    name,
+    async (ctx: any, _emit: any, inquire: any) => {
+      const result = await inquire(inquiryIntent, ctx, {
+        requireComplete: true,
+      });
+
+      if (result === false) {
+        return false;
+      }
+
+      return result && typeof result === "object"
+        ? {
+            ...ctx,
+            ...result,
+          }
+        : ctx;
+    },
+    description,
+    {
+      register: false,
+      isHidden: true,
+    },
   );
 }
 
@@ -1443,6 +2052,96 @@ function overlayServiceInstanceRowsWithLeases(
           : Boolean(row.deleted ?? false),
     };
   });
+}
+
+export function buildServiceInstanceLeaseConsistencyUpdates(
+  serviceInstanceRows: Array<Record<string, unknown>>,
+  serviceInstanceLeaseRows: Array<Record<string, unknown>>,
+  baseContext: Record<string, unknown> = {},
+): Array<Record<string, unknown>> {
+  if (serviceInstanceRows.length === 0 || serviceInstanceLeaseRows.length === 0) {
+    return [];
+  }
+
+  const instancesById = new Map<string, Record<string, unknown>>();
+  for (const row of serviceInstanceRows) {
+    const serviceInstanceId = readString(row.uuid);
+    if (!serviceInstanceId) {
+      continue;
+    }
+
+    instancesById.set(serviceInstanceId, row);
+  }
+
+  const leaseUpdates: Array<Record<string, unknown>> = [];
+  for (const leaseRow of serviceInstanceLeaseRows) {
+    const serviceInstanceId = readString(
+      leaseRow.service_instance_id ?? leaseRow.serviceInstanceId,
+    );
+    if (!serviceInstanceId) {
+      continue;
+    }
+
+    const instanceRow = instancesById.get(serviceInstanceId);
+    if (!instanceRow) {
+      continue;
+    }
+
+    const expectedStatus = Boolean(instanceRow.deleted)
+      ? "deleted"
+      : Boolean(instanceRow.is_non_responsive)
+        ? "non_responsive"
+        : Boolean(instanceRow.is_active)
+          ? "active"
+          : "inactive";
+    const currentStatus = normalizeServiceInstanceLeaseStatus(
+      leaseRow.status ?? leaseRow.lease_status ?? leaseRow.leaseStatus,
+    );
+    if (
+      currentStatus === expectedStatus ||
+      (currentStatus === null && expectedStatus === "active") ||
+      expectedStatus === "active"
+    ) {
+      continue;
+    }
+
+    const modifiedAt =
+      readString(instanceRow.modified) ||
+      readString(leaseRow.modified) ||
+      new Date().toISOString();
+
+    leaseUpdates.push({
+      ...baseContext,
+      filter: {
+        service_instance_id: serviceInstanceId,
+      },
+      data: {
+        status: expectedStatus,
+        is_ready: false,
+        readiness_reason: expectedStatus,
+        lease_expires_at: modifiedAt,
+        last_ready_at: null,
+        deleted: expectedStatus === "deleted",
+        modified: modifiedAt,
+      },
+      queryData: {
+        filter: {
+          service_instance_id: serviceInstanceId,
+        },
+        data: {
+          status: expectedStatus,
+          is_ready: false,
+          readiness_reason: expectedStatus,
+          lease_expires_at: modifiedAt,
+          last_ready_at: null,
+          deleted: expectedStatus === "deleted",
+          modified: modifiedAt,
+        },
+      },
+    });
+  }
+
+  return leaseUpdates;
 }
 
 export default class CadenzaDB {
@@ -6354,6 +7053,11 @@ export default class CadenzaDB {
             serviceInstanceRows,
             serviceInstanceLeaseRows,
           );
+          const leaseConsistencyUpdates = buildServiceInstanceLeaseConsistencyUpdates(
+            serviceInstanceRows,
+            serviceInstanceLeaseRows,
+            ctx,
+          );
           const transportsByInstance = new Map<string, Array<Record<string, unknown>>>();
 
           for (const row of transportRows) {
@@ -6402,12 +7106,19 @@ export default class CadenzaDB {
           emitManifestStructuralProjectionRequests(emit, {
             serviceManifests: manifestRows,
           });
+          if (leaseConsistencyUpdates.length > 0) {
+            emit(META_SERVICE_INSTANCE_LEASE_CONSISTENCY_UPDATES_READY, {
+              ...ctx,
+              __serviceInstanceLeaseConsistencyUpdates: leaseConsistencyUpdates,
+            });
+          }
 
           logLocalSyncDebug("projected_authority_registry_state", {
             serviceInstances: mergedServiceInstanceRows.length,
             serviceInstanceLeases: serviceInstanceLeaseRows.length,
             serviceInstanceTransports: transportRows.length,
             serviceManifests: manifestRows.length,
+            leaseConsistencyUpdates: leaseConsistencyUpdates.length,
           });
 
           return {
@@ -6415,6 +7126,7 @@ export default class CadenzaDB {
             projectedServiceInstanceLeases: serviceInstanceLeaseRows.length,
             projectedServiceInstanceTransports: transportRows.length,
             projectedServiceManifests: manifestRows.length,
+            __serviceInstanceLeaseConsistencyUpdates: leaseConsistencyUpdates,
           };
         },
         "Replays persisted service registry rows into the authority runtime registry after startup.",
@@ -7299,16 +8011,40 @@ export default class CadenzaDB {
         },
       );
 
-      const helperQueryForSnapshotTask = localHelperQueryTask.clone();
-      const globalQueryForSnapshotTask = localGlobalRegistryQueryTask.clone();
+      const helperQueryForSnapshotTask = createLocalCadenzaDBQueryInquiryTask(
+        "Load helper rows for tool dependency snapshot refresh",
+        localHelperQueryTask,
+        "Loads helper rows through the generated default database inquiry during tool dependency snapshot rebuild.",
+      );
+      const globalQueryForSnapshotTask = createLocalCadenzaDBQueryInquiryTask(
+        "Load global rows for tool dependency snapshot refresh",
+        localGlobalRegistryQueryTask,
+        "Loads global_registry rows through the generated default database inquiry during tool dependency snapshot rebuild.",
+      );
       const taskToHelperMapQueryForSnapshotTask =
-        localTaskToHelperMapQueryTask.clone();
+        createLocalCadenzaDBQueryInquiryTask(
+          "Load task-to-helper rows for tool dependency snapshot refresh",
+          localTaskToHelperMapQueryTask,
+          "Loads task_to_helper_map rows through the generated default database inquiry during tool dependency snapshot rebuild.",
+        );
       const helperToHelperMapQueryForSnapshotTask =
-        localHelperToHelperMapQueryTask.clone();
+        createLocalCadenzaDBQueryInquiryTask(
+          "Load helper-to-helper rows for tool dependency snapshot refresh",
+          localHelperToHelperMapQueryTask,
+          "Loads helper_to_helper_map rows through the generated default database inquiry during tool dependency snapshot rebuild.",
+        );
       const taskToGlobalMapQueryForSnapshotTask =
-        localTaskToGlobalMapQueryTask.clone();
+        createLocalCadenzaDBQueryInquiryTask(
+          "Load task-to-global rows for tool dependency snapshot refresh",
+          localTaskToGlobalMapQueryTask,
+          "Loads task_to_global_map rows through the generated default database inquiry during tool dependency snapshot rebuild.",
+        );
       const helperToGlobalMapQueryForSnapshotTask =
-        localHelperToGlobalMapQueryTask.clone();
+        createLocalCadenzaDBQueryInquiryTask(
+          "Load helper-to-global rows for tool dependency snapshot refresh",
+          localHelperToGlobalMapQueryTask,
+          "Loads helper_to_global_map rows through the generated default database inquiry during tool dependency snapshot rebuild.",
+        );
 
       const prepareHelperQueryForSnapshotTask = Cadenza.createMetaTask(
         "Prepare helper query for tool dependency snapshot refresh",
@@ -7583,6 +8319,8 @@ export default class CadenzaDB {
 
       const localServiceInstanceQueryTask =
         Cadenza.getLocalCadenzaDBQueryTask("service_instance");
+      const localServiceInstanceLeaseQueryTask =
+        Cadenza.getLocalCadenzaDBQueryTask("service_instance_lease");
       const localServiceInstanceInsertTask =
         Cadenza.getLocalCadenzaDBInsertTask("service_instance");
       const localServiceInstanceTransportInsertTask =
@@ -7593,15 +8331,21 @@ export default class CadenzaDB {
         "service_instance",
         "update",
       );
+      const localServiceInstanceLeaseUpdateTask = Cadenza.getLocalCadenzaDBTask(
+        "service_instance_lease",
+        "update",
+      );
       const localServiceInstanceTransportUpdateTask =
         Cadenza.getLocalCadenzaDBTask("service_instance_transport", "update");
 
       if (
         !localServiceInstanceQueryTask ||
+        !localServiceInstanceLeaseQueryTask ||
         !localServiceInstanceInsertTask ||
         !localServiceInstanceTransportInsertTask ||
         !localServiceInstanceTransportQueryTask ||
         !localServiceInstanceUpdateTask ||
+        !localServiceInstanceLeaseUpdateTask ||
         !localServiceInstanceTransportUpdateTask
       ) {
         return false;
@@ -7644,21 +8388,53 @@ export default class CadenzaDB {
       ).doAfter(localServiceInstanceTransportInsertTask);
 
       const localServiceInstanceReconciliationQueryTask =
-        localServiceInstanceQueryTask.clone();
+        createLocalCadenzaDBQueryInquiryTask(
+          "Load service instance rows for origin reconciliation",
+          localServiceInstanceQueryTask,
+          "Loads service_instance rows through the generated default database inquiry for origin reconciliation.",
+        );
       const localServiceInstanceTransportByInstanceQueryTask =
-        localServiceInstanceTransportQueryTask.clone();
+        createLocalCadenzaDBQueryInquiryTask(
+          "Load service instance transport rows by instance",
+          localServiceInstanceTransportQueryTask,
+          "Loads service_instance_transport rows through the generated default database inquiry for instance-first reconciliation.",
+        );
       const localServiceInstanceTransportlessInstanceQueryTask =
-        localServiceInstanceQueryTask.clone();
+        createLocalCadenzaDBQueryInquiryTask(
+          "Load transportless service instance candidate",
+          localServiceInstanceQueryTask,
+          "Loads service_instance rows through the generated default database inquiry for transportless-instance evaluation.",
+        );
       const localServiceInstanceTransportLookupTask =
-        localServiceInstanceTransportQueryTask.clone();
+        createLocalCadenzaDBQueryInquiryTask(
+          "Load authoritative service instance transport",
+          localServiceInstanceTransportQueryTask,
+          "Loads authoritative service_instance_transport rows through the generated default database inquiry for origin reconciliation.",
+        );
       const localServiceInstanceTransportReconciliationQueryTask =
-        localServiceInstanceTransportQueryTask.clone();
+        createLocalCadenzaDBQueryInquiryTask(
+          "Load matching service instance transports for origin reconciliation",
+          localServiceInstanceTransportQueryTask,
+          "Loads matching same-origin service_instance_transport rows through the generated default database inquiry for reconciliation.",
+        );
       const localServiceInstanceTransportlessTransportQueryTask =
-        localServiceInstanceTransportQueryTask.clone();
+        createLocalCadenzaDBQueryInquiryTask(
+          "Load transports for transportless service instance candidate",
+          localServiceInstanceTransportQueryTask,
+          "Loads service_instance_transport rows through the generated default database inquiry for transportless-instance evaluation.",
+        );
       const localServiceInstanceOriginCanonicalizationQueryTask =
-        localServiceInstanceQueryTask.clone();
+        createLocalCadenzaDBQueryInquiryTask(
+          "Load service instance rows for origin canonicalization sweep",
+          localServiceInstanceQueryTask,
+          "Loads service_instance rows through the generated default database inquiry for origin canonicalization sweeps.",
+        );
       const localServiceInstanceTransportOriginCanonicalizationQueryTask =
-        localServiceInstanceTransportQueryTask.clone();
+        createLocalCadenzaDBQueryInquiryTask(
+          "Load service instance transport rows for origin canonicalization sweep",
+          localServiceInstanceTransportQueryTask,
+          "Loads service_instance_transport rows through the generated default database inquiry for origin canonicalization sweeps.",
+        );
 
       const prepareOriginReconciliationLookupTask = Cadenza.createMetaTask(
         "Prepare service instance origin reconciliation lookup",
@@ -7973,13 +8749,15 @@ export default class CadenzaDB {
         },
       );
 
-      Cadenza.createMetaTask(
+      const retireSupersededServiceInstanceTask = Cadenza.createMetaTask(
         "Retire superseded same-origin service instance",
-        (ctx: any) => {
+        (ctx: any, emit: any) => {
           const instanceId = readString(ctx?.queryData?.filter?.uuid);
           if (!instanceId) {
             return false;
           }
+
+          const retiredAt = new Date().toISOString();
 
           const nextFilter = {
             uuid: instanceId,
@@ -7989,6 +8767,38 @@ export default class CadenzaDB {
             is_non_responsive: false,
             deleted: false,
           };
+
+          emit(META_RETIRE_SUPERSEDED_SERVICE_INSTANCE_LEASE, {
+            ...ctx,
+            filter: {
+              ...(ctx.filter ?? {}),
+              service_instance_id: instanceId,
+            },
+            data: {
+              status: "inactive",
+              is_ready: false,
+              readiness_reason: "superseded",
+              lease_expires_at: retiredAt,
+              last_ready_at: null,
+              deleted: false,
+              modified: retiredAt,
+            },
+            queryData: {
+              ...(ctx.queryData ?? {}),
+              filter: {
+                service_instance_id: instanceId,
+              },
+              data: {
+                status: "inactive",
+                is_ready: false,
+                readiness_reason: "superseded",
+                lease_expires_at: retiredAt,
+                last_ready_at: null,
+                deleted: false,
+                modified: retiredAt,
+              },
+            },
+          });
 
           return {
             ...ctx,
@@ -8021,6 +8831,65 @@ export default class CadenzaDB {
       )
         .doOn(META_RETIRE_SUPERSEDED_SERVICE_INSTANCE)
         .then(localServiceInstanceUpdateTask);
+
+      Cadenza.createMetaTask(
+        "Retire superseded same-origin service instance lease",
+        (ctx: any) => {
+          const serviceInstanceId = readString(
+            ctx?.queryData?.filter?.service_instance_id ??
+              ctx?.filter?.service_instance_id,
+          );
+          if (!serviceInstanceId) {
+            return false;
+          }
+
+          const retiredAt =
+            readString(ctx?.queryData?.data?.modified ?? ctx?.data?.modified) ||
+            new Date().toISOString();
+          const nextFilter = {
+            service_instance_id: serviceInstanceId,
+          };
+          const nextData = {
+            status: "inactive",
+            is_ready: false,
+            readiness_reason: "superseded",
+            lease_expires_at: retiredAt,
+            last_ready_at: null,
+            deleted: false,
+            modified: retiredAt,
+          };
+
+          return {
+            ...ctx,
+            filter: {
+              ...(ctx.filter ?? {}),
+              ...nextFilter,
+            },
+            data: {
+              ...(ctx.data ?? {}),
+              ...nextData,
+            },
+            queryData: {
+              ...(ctx.queryData ?? {}),
+              filter: {
+                ...(ctx.queryData?.filter ?? ctx.filter ?? {}),
+                ...nextFilter,
+              },
+              data: {
+                ...(ctx.queryData?.data ?? ctx.data ?? {}),
+                ...nextData,
+              },
+            },
+          };
+        },
+        "Marks superseded same-origin service-instance leases inactive on authority.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      )
+        .doOn(META_RETIRE_SUPERSEDED_SERVICE_INSTANCE_LEASE)
+        .then(localServiceInstanceLeaseUpdateTask);
 
       Cadenza.createMetaTask(
         "Delete superseded same-origin service transport",
@@ -8607,6 +9476,137 @@ export default class CadenzaDB {
           },
         );
 
+      const executeServiceInstanceLeaseConsistencySweepTask =
+        Cadenza.createMetaTask(
+          "Execute service instance lease consistency sweep",
+          async (ctx: any, _emit: any, inquire: any) => {
+            logLocalSyncDebug("service_instance_lease_consistency_sweep_execute", {
+              reason: readString(ctx?.__reason),
+              requestedAt: readString(ctx?.requestedAt),
+              attemptDelayMs:
+                typeof ctx?.__attemptDelayMs === "number"
+                  ? ctx.__attemptDelayMs
+                  : null,
+            });
+            const [serviceInstanceResult, serviceInstanceLeaseResult] =
+              await Promise.all([
+                inquire(
+                  resolveDefaultLocalCadenzaDBQueryIntent(localServiceInstanceQueryTask),
+                  {
+                    queryData: {
+                      filter: {
+                        deleted: false,
+                      },
+                    },
+                  },
+                  { requireComplete: true },
+                ),
+                inquire(
+                  resolveDefaultLocalCadenzaDBQueryIntent(
+                    localServiceInstanceLeaseQueryTask,
+                  ),
+                  {
+                    queryData: {
+                      filter: {
+                        deleted: false,
+                      },
+                    },
+                  },
+                  { requireComplete: true },
+                ),
+              ]);
+
+            const serviceInstanceRows = Array.isArray(serviceInstanceResult?.rows)
+              ? serviceInstanceResult.rows
+              : [];
+            const serviceInstanceLeaseRows = Array.isArray(
+              serviceInstanceLeaseResult?.rows,
+            )
+              ? serviceInstanceLeaseResult.rows
+              : [];
+            logLocalSyncDebug("service_instance_lease_consistency_sweep_rows", {
+              serviceInstanceRowCount: serviceInstanceRows.length,
+              serviceInstanceLeaseRowCount: serviceInstanceLeaseRows.length,
+            });
+            const leaseUpdates = buildServiceInstanceLeaseConsistencyUpdates(
+              normalizeRowArray(serviceInstanceRows),
+              normalizeRowArray(serviceInstanceLeaseRows),
+              ctx,
+            );
+
+            if (leaseUpdates.length === 0) {
+              logLocalSyncDebug(
+                "service_instance_lease_consistency_sweep_no_updates",
+                {
+                  serviceInstanceRowCount: serviceInstanceRows.length,
+                  serviceInstanceLeaseRowCount: serviceInstanceLeaseRows.length,
+                },
+              );
+              return false;
+            }
+
+            logLocalSyncDebug("service_instance_lease_consistency_sweep_updates", {
+              leaseUpdateCount: leaseUpdates.length,
+              leaseUpdateServiceInstanceIds: leaseUpdates
+                .map((update) => {
+                  const updateRecord = readRecord(update);
+                  const queryData = readRecord(updateRecord?.queryData);
+                  const queryFilter = readRecord(queryData?.filter);
+                  const filter = readRecord(updateRecord?.filter);
+                  return readString(
+                    queryFilter?.service_instance_id ?? filter?.service_instance_id,
+                  );
+                })
+                .filter(Boolean)
+                .slice(0, 20),
+            });
+
+            return {
+              ...ctx,
+              __serviceInstanceLeaseConsistencyUpdates: leaseUpdates,
+            };
+          },
+          "Reconciles authority service-instance leases with durable service_instance lifecycle state after startup and sync.",
+          {
+            register: false,
+            isHidden: true,
+          },
+        );
+
+      const splitServiceInstanceLeaseConsistencyUpdatesTask =
+        Cadenza.createMetaTask(
+          "Split service instance lease consistency updates",
+          function* (ctx: any) {
+            const updates = Array.isArray(
+              ctx?.__serviceInstanceLeaseConsistencyUpdates,
+            )
+              ? ctx.__serviceInstanceLeaseConsistencyUpdates
+              : [];
+
+            logLocalSyncDebug("service_instance_lease_consistency_split", {
+              updateCount: updates.length,
+            });
+
+            for (const update of updates) {
+              if (
+                !readString(
+                  update?.queryData?.filter?.service_instance_id ??
+                    update?.filter?.service_instance_id,
+                )
+              ) {
+                continue;
+              }
+
+              yield update;
+            }
+          },
+          "Projects service-instance lease consistency updates into local lease update tasks.",
+          {
+            register: false,
+            isHidden: true,
+          },
+        );
+
       prepareOriginCanonicalizationInstanceQueryTask.doAfter(
         executeServiceInstanceOriginCanonicalizationSweepTask,
       );
@@ -8627,11 +9627,58 @@ export default class CadenzaDB {
         splitSupersededServiceTransportRetirementsTask,
       );
       splitSupersededServiceInstanceRetirementsTask.then(
-        localServiceInstanceUpdateTask,
+        retireSupersededServiceInstanceTask,
+      );
+      executeServiceInstanceLeaseConsistencySweepTask.then(
+        splitServiceInstanceLeaseConsistencyUpdatesTask,
+      );
+      splitServiceInstanceLeaseConsistencyUpdatesTask.doOn(
+        META_SERVICE_INSTANCE_LEASE_CONSISTENCY_UPDATES_READY,
+      );
+      splitServiceInstanceLeaseConsistencyUpdatesTask.then(
+        localServiceInstanceLeaseUpdateTask,
       );
       splitSupersededServiceTransportRetirementsTask.then(
         localServiceInstanceTransportUpdateTask,
       );
+
+      Cadenza.createMetaTask(
+        "Request service instance lease consistency sweep",
+        (ctx: any, emit: any) => {
+          logLocalSyncDebug("service_instance_lease_consistency_sweep_requested", {
+            reason: readString(ctx?.__reason),
+            attemptDelayMs:
+              typeof ctx?.__attemptDelayMs === "number"
+                ? ctx.__attemptDelayMs
+                : null,
+          });
+          emit(META_SERVICE_INSTANCE_LEASE_CONSISTENCY_SWEEP_REQUESTED, {
+            ...ctx,
+            requestedAt: new Date().toISOString(),
+          });
+          return true;
+        },
+        "Requests one authority-local sweep to reconcile stale service-instance leases with durable lifecycle rows.",
+        {
+          register: false,
+          isHidden: true,
+        },
+      ).doOn("global.meta.sync_controller.synced", "meta.service_registry.instance_inserted");
+
+      executeServiceInstanceLeaseConsistencySweepTask.doOn(
+        META_SERVICE_INSTANCE_LEASE_CONSISTENCY_SWEEP_REQUESTED,
+      );
+
+      for (const delayMs of AUTHORITY_REGISTRY_PROJECTION_STARTUP_DELAYS_MS) {
+        Cadenza.schedule(
+          META_SERVICE_INSTANCE_LEASE_CONSISTENCY_SWEEP_REQUESTED,
+          {
+            __attemptDelayMs: delayMs,
+            __reason: "cadenza_db_startup",
+          },
+          delayMs,
+        );
+      }
 
       for (const [index, delayMs] of SERVICE_INSTANCE_ORIGIN_CANONICALIZATION_STARTUP_DELAYS_MS.entries()) {
         Cadenza.schedule(

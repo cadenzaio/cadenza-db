@@ -264,11 +264,11 @@ export function registerAuthorityRuntimeStatusTasks(): void {
         __authorityRuntimeStatusReport: report,
         applied: true,
       });
+      Cadenza.emit(META_AUTHORITY_RUNTIME_STATUS_LEASE_UPSERT_REQUESTED, {
+        __authorityRuntimeStatusReport: report,
+        applied: true,
+      });
     }
-    Cadenza.emit(META_AUTHORITY_RUNTIME_STATUS_LEASE_UPSERT_REQUESTED, {
-      __authorityRuntimeStatusReport: report,
-      applied,
-    });
 
     return {
       applied,
@@ -348,23 +348,13 @@ export function registerAuthorityRuntimeStatusTasks(): void {
       return true;
     }
 
-    const localServiceInstanceQueryTask =
-      Cadenza.getLocalCadenzaDBQueryTask("service_instance");
     const localHealthSnapshotInsertTask =
       Cadenza.getLocalCadenzaDBInsertTask("service_instance_health_snapshot");
     const localServiceInstanceLeaseInsertTask =
       Cadenza.getLocalCadenzaDBInsertTask("service_instance_lease");
-    if (
-      !localServiceInstanceQueryTask ||
-      !localHealthSnapshotInsertTask ||
-      !localServiceInstanceLeaseInsertTask
-    ) {
+    if (!localHealthSnapshotInsertTask || !localServiceInstanceLeaseInsertTask) {
       return false;
     }
-
-    const localServiceInstanceLeaseLookupTask = localServiceInstanceQueryTask.clone();
-    const localSelfServiceInstanceLeaseLookupTask =
-      localServiceInstanceQueryTask.clone();
 
     Cadenza.createMetaTask(
       "Prepare authority runtime status history snapshot insert",
@@ -421,40 +411,9 @@ export function registerAuthorityRuntimeStatusTasks(): void {
       .then(localHealthSnapshotInsertTask);
 
     Cadenza.createMetaTask(
-      "Prepare authority runtime status lease instance lookup",
-      (ctx: any) => {
-        const report = normalizeAuthorityRuntimeStatusReport(
-          (ctx?.__authorityRuntimeStatusReport ?? ctx) as Record<string, any>,
-        );
-        if (!report) {
-          return false;
-        }
-
-        return {
-          ...ctx,
-          __authorityRuntimeStatusReport: report,
-          queryData: {
-            filter: {
-              uuid: report.serviceInstanceId,
-              deleted: false,
-            },
-          },
-        };
-      },
-      "Loads the structural service_instance row before writing an authority-owned lease row.",
-      {
-        register: false,
-        isHidden: true,
-      },
-    )
-      .doOn(META_AUTHORITY_RUNTIME_STATUS_LEASE_UPSERT_REQUESTED)
-      .then(localServiceInstanceLeaseLookupTask);
-
-    Cadenza.createMetaTask(
       "Prepare authority runtime status lease upsert",
       (ctx: any) => {
-        const rows = Array.isArray(ctx?.rows) ? ctx.rows : [];
-        if (rows.length === 0) {
+        if (ctx?.applied !== true) {
           return false;
         }
 
@@ -472,59 +431,14 @@ export function registerAuthorityRuntimeStatusTasks(): void {
         register: false,
         isHidden: true,
       },
-    ).doAfter(localServiceInstanceLeaseLookupTask).then(
-      localServiceInstanceLeaseInsertTask,
-    );
-
-    Cadenza.createMetaTask(
-      "Prepare local authority runtime status lease instance lookup",
-      (ctx: any) => {
-        const report = normalizeAuthorityRuntimeStatusReport(ctx as Record<string, any>);
-        if (!report || report.serviceName !== "CadenzaDB") {
-          return false;
-        }
-
-        const localServiceInstanceId = String(
-          (Cadenza.serviceRegistry as any)?.serviceInstanceId ?? "",
-        ).trim();
-        if (
-          !localServiceInstanceId ||
-          report.serviceInstanceId !== localServiceInstanceId
-        ) {
-          return false;
-        }
-
-        return {
-          ...ctx,
-          __authorityRuntimeStatusReport: report,
-          queryData: {
-            filter: {
-              uuid: report.serviceInstanceId,
-              deleted: false,
-            },
-          },
-        };
-      },
-      "Loads the local CadenzaDB structural service_instance row before writing its authority lease row.",
-      {
-        register: false,
-        isHidden: true,
-      },
     )
-      .doOn(META_RUNTIME_STATUS_AUTHORITY_SYNC_REQUESTED_SIGNAL)
-      .then(localSelfServiceInstanceLeaseLookupTask);
+      .doOn(META_AUTHORITY_RUNTIME_STATUS_LEASE_UPSERT_REQUESTED)
+      .then(localServiceInstanceLeaseInsertTask);
 
     Cadenza.createMetaTask(
       "Persist local authority runtime status lease",
       (ctx: any) => {
-        const rows = Array.isArray(ctx?.rows) ? ctx.rows : [];
-        if (rows.length === 0) {
-          return false;
-        }
-
-        const report = normalizeAuthorityRuntimeStatusReport(
-          (ctx?.__authorityRuntimeStatusReport ?? ctx) as Record<string, any>,
-        );
+        const report = normalizeAuthorityRuntimeStatusReport(ctx as Record<string, any>);
         if (!report || report.serviceName !== "CadenzaDB") {
           return false;
         }
@@ -546,9 +460,9 @@ export function registerAuthorityRuntimeStatusTasks(): void {
         register: false,
         isHidden: true,
       },
-    ).doAfter(localSelfServiceInstanceLeaseLookupTask).then(
-      localServiceInstanceLeaseInsertTask,
-    );
+    )
+      .doOn(META_RUNTIME_STATUS_AUTHORITY_SYNC_REQUESTED_SIGNAL)
+      .then(localServiceInstanceLeaseInsertTask);
 
     return true;
   };

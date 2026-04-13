@@ -11,10 +11,8 @@ const META_RUNTIME_STATUS_AUTHORITY_SYNC_REQUESTED_SIGNAL =
 describe("authority runtime status actor", () => {
   let persistedHealthSnapshots: Record<string, unknown>[];
   let persistedLeases: Record<string, unknown>[];
-  let knownServiceInstanceIds: Set<string>;
   let healthSnapshotInsertTask: any;
   let leaseInsertTask: any;
-  let serviceInstanceQueryTask: any;
 
   beforeEach(() => {
     try {
@@ -29,7 +27,6 @@ describe("authority runtime status actor", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     persistedHealthSnapshots = [];
     persistedLeases = [];
-    knownServiceInstanceIds = new Set<string>();
     healthSnapshotInsertTask = Cadenza.createMetaTask(
       "Capture health snapshot insert",
       (ctx) => {
@@ -48,34 +45,12 @@ describe("authority runtime status actor", () => {
       "",
       { register: false },
     );
-    serviceInstanceQueryTask = Cadenza.createMetaTask(
-      "Capture service_instance query",
-      (ctx) => {
-        const targetId = String(ctx?.queryData?.filter?.uuid ?? "").trim();
-        const rows = targetId && knownServiceInstanceIds.has(targetId)
-          ? [{ uuid: targetId }]
-          : [];
-        return {
-          ...ctx,
-          rows,
-          rowCount: rows.length,
-        };
-      },
-      "",
-      { register: false },
-    );
     vi.spyOn(Cadenza, "getLocalCadenzaDBInsertTask").mockImplementation(
       ((tableName: string) =>
         tableName === "service_instance_health_snapshot"
           ? (healthSnapshotInsertTask as any)
           : tableName === "service_instance_lease"
             ? (leaseInsertTask as any)
-          : null) as any,
-    );
-    vi.spyOn(Cadenza, "getLocalCadenzaDBQueryTask").mockImplementation(
-      ((tableName: string) =>
-        tableName === "service_instance"
-          ? (serviceInstanceQueryTask as any)
           : null) as any,
     );
     registerAuthorityRuntimeStatusTasks();
@@ -94,7 +69,6 @@ describe("authority runtime status actor", () => {
 
   it("applies volatile runtime status directly when the structural instance is already known", async () => {
     const registry = Cadenza.serviceRegistry as any;
-    knownServiceInstanceIds.add("orders-1");
     registry.instances.set("OrdersService", [
       {
         uuid: "orders-1",
@@ -255,7 +229,6 @@ describe("authority runtime status actor", () => {
         transports: [],
       },
     ]);
-    knownServiceInstanceIds.add("orders-2");
 
     Cadenza.emit("meta.service_instance.updated", {
       data: {
@@ -317,7 +290,6 @@ describe("authority runtime status actor", () => {
   });
 
   it("persists local CadenzaDB snapshots from the authority sync signal", async () => {
-    knownServiceInstanceIds.add("cadenza-db");
     Cadenza.emit(META_RUNTIME_STATUS_AUTHORITY_SYNC_REQUESTED_SIGNAL, {
       serviceName: "CadenzaDB",
       serviceInstanceId: "cadenza-db",
@@ -385,7 +357,6 @@ describe("authority runtime status actor", () => {
     Cadenza.setMode("production");
     persistedHealthSnapshots = [];
     persistedLeases = [];
-    knownServiceInstanceIds = new Set<string>(["cadenza-db"]);
     healthSnapshotInsertTask = Cadenza.createMetaTask(
       "Capture health snapshot insert",
       (ctx) => {
@@ -400,22 +371,6 @@ describe("authority runtime status actor", () => {
       (ctx) => {
         persistedLeases.push({ ...ctx });
         return ctx;
-      },
-      "",
-      { register: false },
-    );
-    serviceInstanceQueryTask = Cadenza.createMetaTask(
-      "Capture service_instance query",
-      (ctx) => {
-        const targetId = String(ctx?.queryData?.filter?.uuid ?? "").trim();
-        const rows = targetId && knownServiceInstanceIds.has(targetId)
-          ? [{ uuid: targetId }]
-          : [];
-        return {
-          ...ctx,
-          rows,
-          rowCount: rows.length,
-        };
       },
       "",
       { register: false },
@@ -464,64 +419,6 @@ describe("authority runtime status actor", () => {
         },
       },
     });
-    expect(persistedLeases).toHaveLength(1);
-  });
-
-  it("skips lease persistence until the structural instance row exists", async () => {
-    Cadenza.emit(META_RUNTIME_STATUS_AUTHORITY_SYNC_REQUESTED_SIGNAL, {
-      serviceName: "CadenzaDB",
-      serviceInstanceId: "cadenza-db",
-      reportedAt: "2026-03-27T10:12:00.000Z",
-      state: "healthy",
-      acceptingWork: true,
-      numberOfRunningGraphs: 0,
-      cpuUsage: 0.1,
-      memoryUsage: 0.2,
-      eventLoopLag: 4,
-      isActive: true,
-      isNonResponsive: false,
-      isBlocked: false,
-      health: {
-        runtimeMetrics: {
-          rssBytes: 200,
-          heapUsedBytes: 100,
-          heapTotalBytes: 150,
-          memoryLimitBytes: 700,
-        },
-      },
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 25));
-
-    expect(persistedLeases).toHaveLength(0);
-
-    knownServiceInstanceIds.add("cadenza-db");
-
-    Cadenza.emit(META_RUNTIME_STATUS_AUTHORITY_SYNC_REQUESTED_SIGNAL, {
-      serviceName: "CadenzaDB",
-      serviceInstanceId: "cadenza-db",
-      reportedAt: "2026-03-27T10:12:05.000Z",
-      state: "healthy",
-      acceptingWork: true,
-      numberOfRunningGraphs: 0,
-      cpuUsage: 0.1,
-      memoryUsage: 0.2,
-      eventLoopLag: 4,
-      isActive: true,
-      isNonResponsive: false,
-      isBlocked: false,
-      health: {
-        runtimeMetrics: {
-          rssBytes: 200,
-          heapUsedBytes: 100,
-          heapTotalBytes: 150,
-          memoryLimitBytes: 700,
-        },
-      },
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 25));
-
     expect(persistedLeases).toHaveLength(1);
   });
 });

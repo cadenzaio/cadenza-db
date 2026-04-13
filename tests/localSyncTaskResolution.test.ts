@@ -7,9 +7,23 @@ import Cadenza, {
   AUTHORITY_SERVICE_MANIFEST_UPDATED_SIGNAL,
 } from "@cadenza.io/service";
 import CadenzaDB, {
+  buildServiceInstanceLeaseConsistencyUpdates,
   collectProjectedManifestStructuralRowsFromManifestRows,
+  resolveDefaultLocalCadenzaDBQueryIntent,
   resolveLocalServiceRegistrySyncTasks,
 } from "../src/index";
+
+function createStubLocalTask(
+  cadenza: typeof Cadenza,
+  taskName: string,
+): void {
+  const task = cadenza.createMetaTask(taskName, () => ({}));
+  if (taskName.startsWith("Query ")) {
+    task.respondsTo(
+      `query-pg-test-${taskName.slice("Query ".length).replace(/\s+/g, "_")}`,
+    );
+  }
+}
 
 describe("local CadenzaDB sync task resolution", () => {
   afterEach(async () => {
@@ -73,6 +87,127 @@ describe("local CadenzaDB sync task resolution", () => {
     expect(() => resolveLocalServiceRegistrySyncTasks()).toThrow(
       /local sync query tasks are not available/i,
     );
+  });
+
+  it("prefers the generated default query intent for local inquiry wrappers", () => {
+    expect(
+      resolveDefaultLocalCadenzaDBQueryIntent({
+        name: "Query service_instance",
+        handlesIntents: new Set([
+          "service-instance-lookup",
+          "query-pg-cadenzadb-postgres-actor-service_instance",
+        ]),
+      }),
+    ).toBe("query-pg-cadenzadb-postgres-actor-service_instance");
+  });
+
+  it("fails fast when a local query task does not expose a resolvable default query intent", () => {
+    expect(() =>
+      resolveDefaultLocalCadenzaDBQueryIntent({
+        name: "Query service_instance",
+        handlesIntents: new Set([
+          "service-instance-lookup",
+          "service-instance-lookup-secondary",
+        ]),
+      }),
+    ).toThrow(/unable to resolve default local cadenzadb query intent/i);
+  });
+
+  it("builds lease consistency updates from durable service-instance rows", () => {
+    expect(
+      buildServiceInstanceLeaseConsistencyUpdates(
+        [
+          {
+            uuid: "instance-1",
+            is_active: false,
+            is_non_responsive: false,
+            deleted: false,
+            modified: "2026-04-12T18:00:00.000Z",
+          },
+          {
+            uuid: "instance-2",
+            is_active: false,
+            is_non_responsive: true,
+            deleted: false,
+            modified: "2026-04-12T18:05:00.000Z",
+          },
+        ],
+        [
+          {
+            service_instance_id: "instance-1",
+            status: "active",
+            modified: "2026-04-12T17:59:00.000Z",
+          },
+          {
+            service_instance_id: "instance-2",
+            status: "active",
+            modified: "2026-04-12T18:04:00.000Z",
+          },
+        ],
+        {
+          __reason: "test",
+        },
+      ),
+    ).toEqual([
+      {
+        __reason: "test",
+        filter: {
+          service_instance_id: "instance-1",
+        },
+        data: {
+          status: "inactive",
+          is_ready: false,
+          readiness_reason: "inactive",
+          lease_expires_at: "2026-04-12T18:00:00.000Z",
+          last_ready_at: null,
+          deleted: false,
+          modified: "2026-04-12T18:00:00.000Z",
+        },
+        queryData: {
+          filter: {
+            service_instance_id: "instance-1",
+          },
+          data: {
+            status: "inactive",
+            is_ready: false,
+            readiness_reason: "inactive",
+            lease_expires_at: "2026-04-12T18:00:00.000Z",
+            last_ready_at: null,
+            deleted: false,
+            modified: "2026-04-12T18:00:00.000Z",
+          },
+        },
+      },
+      {
+        __reason: "test",
+        filter: {
+          service_instance_id: "instance-2",
+        },
+        data: {
+          status: "non_responsive",
+          is_ready: false,
+          readiness_reason: "non_responsive",
+          lease_expires_at: "2026-04-12T18:05:00.000Z",
+          last_ready_at: null,
+          deleted: false,
+          modified: "2026-04-12T18:05:00.000Z",
+        },
+        queryData: {
+          filter: {
+            service_instance_id: "instance-2",
+          },
+          data: {
+            status: "non_responsive",
+            is_ready: false,
+            readiness_reason: "non_responsive",
+            lease_expires_at: "2026-04-12T18:05:00.000Z",
+            last_ready_at: null,
+            deleted: false,
+            modified: "2026-04-12T18:05:00.000Z",
+          },
+        },
+      },
+    ]);
   });
 
   it("registers bootstrap authority responders for service instance and transport inserts", async () => {
@@ -697,12 +832,15 @@ describe("local CadenzaDB sync task resolution", () => {
     for (const taskName of [
       "Insert service_instance",
       "Query service_instance",
+      "Insert service_instance_lease",
+      "Query service_instance_lease",
+      "Update service_instance_lease",
       "Query service_instance_transport",
       "Insert service_instance_transport",
       "Update service_instance",
       "Update service_instance_transport",
     ]) {
-      FreshCadenza.createMetaTask(taskName, () => ({}));
+      createStubLocalTask(FreshCadenza, taskName);
     }
 
     vi.spyOn(FreshCadenza, "createMetaDatabaseService").mockImplementation(
@@ -765,12 +903,15 @@ describe("local CadenzaDB sync task resolution", () => {
     for (const taskName of [
       "Insert service_instance",
       "Query service_instance",
+      "Insert service_instance_lease",
+      "Query service_instance_lease",
+      "Update service_instance_lease",
       "Query service_instance_transport",
       "Insert service_instance_transport",
       "Update service_instance",
       "Update service_instance_transport",
     ]) {
-      FreshCadenza.createMetaTask(taskName, () => ({}));
+      createStubLocalTask(FreshCadenza, taskName);
     }
 
     vi.spyOn(FreshCadenza, "createMetaDatabaseService").mockImplementation(
@@ -800,12 +941,15 @@ describe("local CadenzaDB sync task resolution", () => {
     for (const taskName of [
       "Insert service_instance",
       "Query service_instance",
+      "Insert service_instance_lease",
+      "Query service_instance_lease",
+      "Update service_instance_lease",
       "Query service_instance_transport",
       "Insert service_instance_transport",
       "Update service_instance",
       "Update service_instance_transport",
     ]) {
-      FreshCadenza.createMetaTask(taskName, () => ({}));
+      createStubLocalTask(FreshCadenza, taskName);
     }
 
     vi.spyOn(FreshCadenza, "createMetaDatabaseService").mockImplementation(
@@ -839,12 +983,15 @@ describe("local CadenzaDB sync task resolution", () => {
     for (const taskName of [
       "Insert service_instance",
       "Query service_instance",
+      "Insert service_instance_lease",
+      "Query service_instance_lease",
+      "Update service_instance_lease",
       "Query service_instance_transport",
       "Insert service_instance_transport",
       "Update service_instance",
       "Update service_instance_transport",
     ]) {
-      FreshCadenza.createMetaTask(taskName, () => ({}));
+      createStubLocalTask(FreshCadenza, taskName);
     }
 
     vi.spyOn(FreshCadenza, "createMetaDatabaseService").mockImplementation(
@@ -886,6 +1033,9 @@ describe("local CadenzaDB sync task resolution", () => {
     ) as { name: string } | undefined;
     const splitInstanceRetirementsTask = FreshCadenza.get(
       "Split superseded same-origin service instance retirements",
+    ) as { nextTasks?: Set<{ name: string }> } | undefined;
+    const retireInstanceTask = FreshCadenza.get(
+      "Retire superseded same-origin service instance",
     ) as { nextTasks?: Set<{ name: string }> } | undefined;
     const splitTransportRetirementsTask = FreshCadenza.get(
       "Split superseded same-origin service transport retirements",
@@ -992,6 +1142,12 @@ describe("local CadenzaDB sync task resolution", () => {
     ).toBe(true);
     expect(
       Array.from(splitInstanceRetirementsTask?.nextTasks ?? []).some(
+        (task) =>
+          task.name === "Retire superseded same-origin service instance",
+      ),
+    ).toBe(true);
+    expect(
+      Array.from(retireInstanceTask?.nextTasks ?? []).some(
         (task) => task.name === "Update service_instance",
       ),
     ).toBe(true);
@@ -1046,7 +1202,7 @@ describe("local CadenzaDB sync task resolution", () => {
     );
   });
 
-  it("passes top-level filter and data into same-origin retirement updates", async () => {
+  it("passes top-level filter and data into same-origin retirement projections", async () => {
     vi.resetModules();
 
     const serviceModule = await import("@cadenza.io/service");
@@ -1056,12 +1212,15 @@ describe("local CadenzaDB sync task resolution", () => {
     for (const taskName of [
       "Insert service_instance",
       "Query service_instance",
+      "Insert service_instance_lease",
+      "Query service_instance_lease",
+      "Update service_instance_lease",
       "Query service_instance_transport",
       "Insert service_instance_transport",
       "Update service_instance",
       "Update service_instance_transport",
     ]) {
-      FreshCadenza.createMetaTask(taskName, () => ({}));
+      createStubLocalTask(FreshCadenza, taskName);
     }
 
     vi.spyOn(FreshCadenza, "createMetaDatabaseService").mockImplementation(
@@ -1072,30 +1231,60 @@ describe("local CadenzaDB sync task resolution", () => {
 
     FreshCadenzaDB.createCadenzaDBService();
 
-    const retireInstanceTask = FreshCadenza.get(
-      "Retire superseded same-origin service instance",
-    ) as { taskFunction?: (ctx: Record<string, unknown>) => Record<string, unknown> } | undefined;
-    const deleteTransportTask = FreshCadenza.get(
-      "Delete superseded same-origin service transport",
-    ) as { taskFunction?: (ctx: Record<string, unknown>) => Record<string, unknown> } | undefined;
+    const splitInstanceRetirementsTask = FreshCadenza.get(
+      "Split superseded same-origin service instance retirements",
+    ) as
+      | {
+          taskFunction?: (ctx: Record<string, unknown>) => Generator<Record<string, unknown>>;
+          nextTasks?: Set<{ name: string }>;
+        }
+      | undefined;
+    const splitTransportRetirementsTask = FreshCadenza.get(
+      "Split superseded same-origin service transport retirements",
+    ) as
+      | {
+          taskFunction?: (ctx: Record<string, unknown>) => Generator<Record<string, unknown>>;
+          nextTasks?: Set<{ name: string }>;
+        }
+      | undefined;
 
-    expect(retireInstanceTask).toBeTruthy();
-    expect(deleteTransportTask).toBeTruthy();
+    expect(splitInstanceRetirementsTask).toBeTruthy();
+    expect(splitTransportRetirementsTask).toBeTruthy();
 
-    const retiredInstanceContext = retireInstanceTask?.taskFunction?.({
-      queryData: {
-        filter: {
-          uuid: "db-old",
-        },
-      },
-    });
-    const retiredTransportContext = deleteTransportTask?.taskFunction?.({
-      queryData: {
-        filter: {
-          uuid: "transport-old",
-        },
-      },
-    });
+    const retiredInstanceContext = splitInstanceRetirementsTask?.taskFunction
+      ? Array.from(
+          splitInstanceRetirementsTask.taskFunction({
+            __originCanonicalizationPlans: [
+              {
+                retiredInstanceIds: ["db-old"],
+              },
+            ],
+          }),
+        )[0]
+      : undefined;
+    const retiredTransportContext = splitTransportRetirementsTask?.taskFunction
+      ? Array.from(
+          splitTransportRetirementsTask.taskFunction({
+            __originCanonicalizationPlans: [
+              {
+                retiredTransportIds: ["transport-old"],
+              },
+            ],
+          }),
+        )[0]
+      : undefined;
+
+    expect(
+      Array.from(splitInstanceRetirementsTask?.nextTasks ?? []).some(
+        (task) =>
+          task.name === "Retire superseded same-origin service instance",
+      ),
+    ).toBe(true);
+    expect(
+      Array.from(splitTransportRetirementsTask?.nextTasks ?? []).some(
+        (task) => task.name === "Update service_instance_transport",
+      ),
+    ).toBe(true);
 
     expect(retiredInstanceContext).toEqual(
       expect.objectContaining({
