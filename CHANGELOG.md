@@ -1,3 +1,11 @@
+## [2.12.2](https://github.com/cadenzaio/cadenza-db/compare/v2.12.1...v2.12.2) (2026-04-17)
+
+
+### Bug Fixes
+
+* correct cadenza-db service peer dependency ([fa228e7](https://github.com/cadenzaio/cadenza-db/commit/fa228e7037c68b294bab6da5baeb5ab1318321db))
+* harden authority manifest replay and execution routing ([7fd9ebf](https://github.com/cadenzaio/cadenza-db/commit/7fd9ebfc88c33cb2e95fd96ba86cd2bd67f49220))
+
 ## [2.12.1](https://github.com/cadenzaio/cadenza-db/compare/v2.12.0...v2.12.1) (2026-04-13)
 
 
