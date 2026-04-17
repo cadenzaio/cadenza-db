@@ -115,10 +115,10 @@ describe("ExecutionPersistenceCoordinator", () => {
     await waitForCondition(() => order.length === 4);
 
     expect(order).toEqual([
-      "insert-pg-cadenza-db-postgres-actor-execution_trace:trace-1",
-      "insert-pg-cadenza-db-postgres-actor-routine_execution:routine-exec-1",
-      "insert-pg-cadenza-db-postgres-actor-signal_emission:signal-emission-1",
-      "insert-pg-cadenza-db-postgres-actor-task_execution:task-exec-1",
+      "meta-insert-pg-cadenza-db-postgres-actor-execution_trace:trace-1",
+      "meta-insert-pg-cadenza-db-postgres-actor-routine_execution:routine-exec-1",
+      "meta-insert-pg-cadenza-db-postgres-actor-signal_emission:signal-emission-1",
+      "meta-insert-pg-cadenza-db-postgres-actor-task_execution:task-exec-1",
     ]);
   });
 
@@ -191,9 +191,9 @@ describe("ExecutionPersistenceCoordinator", () => {
     await waitForCondition(() => order.length === 3);
 
     expect(order).toEqual([
-      "insert-pg-cadenza-db-postgres-actor-execution_trace:trace-2",
-      "insert-pg-cadenza-db-postgres-actor-inquiry:inquiry-1",
-      "update-pg-cadenza-db-postgres-actor-inquiry:inquiry-1",
+      "meta-insert-pg-cadenza-db-postgres-actor-execution_trace:trace-2",
+      "meta-insert-pg-cadenza-db-postgres-actor-inquiry:inquiry-1",
+      "meta-update-pg-cadenza-db-postgres-actor-inquiry:inquiry-1",
     ]);
   });
 
@@ -202,7 +202,10 @@ describe("ExecutionPersistenceCoordinator", () => {
 
     vi.spyOn(Cadenza, "inquire").mockImplementation(
       async (intentName: string, context: Record<string, any>) => {
-        if (intentName === "insert-pg-cadenza-db-postgres-actor-routine_execution") {
+        if (
+          intentName ===
+          "meta-insert-pg-cadenza-db-postgres-actor-routine_execution"
+        ) {
           routineInsertPayloads.push({ ...(context?.queryData?.data ?? {}) });
         }
 
@@ -270,7 +273,10 @@ describe("ExecutionPersistenceCoordinator", () => {
 
     vi.spyOn(Cadenza, "inquire").mockImplementation(
       async (intentName: string, context: Record<string, any>) => {
-        if (intentName === "insert-pg-cadenza-db-postgres-actor-task_execution") {
+        if (
+          intentName ===
+          "meta-insert-pg-cadenza-db-postgres-actor-task_execution"
+        ) {
           taskInsertPayloads.push({ ...(context?.queryData?.data ?? {}) });
         }
 
@@ -349,7 +355,10 @@ describe("ExecutionPersistenceCoordinator", () => {
 
     vi.spyOn(Cadenza, "inquire").mockImplementation(
       async (intentName: string, context: Record<string, any>) => {
-        if (intentName === "update-pg-cadenza-db-postgres-actor-task_execution") {
+        if (
+          intentName ===
+          "meta-update-pg-cadenza-db-postgres-actor-task_execution"
+        ) {
           taskUpdatePayloads.push({ ...(context?.queryData?.data ?? {}) });
         }
 
@@ -439,7 +448,10 @@ describe("ExecutionPersistenceCoordinator", () => {
 
     vi.spyOn(Cadenza, "inquire").mockImplementation(
       async (intentName: string, context: Record<string, any>) => {
-        if (intentName === "insert-pg-cadenza-db-postgres-actor-signal_emission") {
+        if (
+          intentName ===
+          "meta-insert-pg-cadenza-db-postgres-actor-signal_emission"
+        ) {
           signalInsertPayloads.push({ ...(context?.queryData?.data ?? {}) });
         }
 
@@ -500,9 +512,9 @@ describe("ExecutionPersistenceCoordinator", () => {
     ExecutionPersistenceCoordinator.instance;
 
     expect(Cadenza.get("Process execution persistence bundle")).toBeTruthy();
-    expect(Cadenza.get("Normalize execution trace persistence event")).toBeTruthy();
-    expect(Cadenza.get("Normalize routine execution update event")).toBeTruthy();
-    expect(Cadenza.get("Normalize task execution update event")).toBeTruthy();
+    expect(Cadenza.get("Normalize execution trace persistence event")).toBeFalsy();
+    expect(Cadenza.get("Normalize routine execution update event")).toBeFalsy();
+    expect(Cadenza.get("Normalize task execution update event")).toBeFalsy();
   });
 
   it("uses an aggressively expiring per-trace actor session policy", () => {

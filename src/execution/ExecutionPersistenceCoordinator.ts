@@ -414,7 +414,7 @@ function buildExecutionPersistenceIntentName(
   operation: "insert" | "update",
   tableName: ExecutionPersistenceEntityType,
 ): string {
-  return `${operation}-pg-${CADENZA_DB_POSTGRES_ACTOR_TOKEN}-${tableName}`;
+  return `meta-${operation}-pg-${CADENZA_DB_POSTGRES_ACTOR_TOKEN}-${tableName}`;
 }
 
 function normalizeRoutineExecutionInsertData(
@@ -815,40 +815,5 @@ export default class ExecutionPersistenceCoordinator {
       "Processes one execution persistence bundle through the authority-side coordinator actor.",
     ).doOn(EXECUTION_PERSISTENCE_BUNDLE_SIGNAL);
 
-    Cadenza.createMetaTask(
-      "Normalize execution trace persistence event",
-      (ctx) => buildExecutionTraceBundleFromContext(ctx as Record<string, any>) ?? false,
-      "Normalizes standalone execution-trace creation into a coordinator bundle.",
-      {
-        register: false,
-        isHidden: true,
-      },
-    )
-      .doOn("global.meta.graph_metadata.execution_trace_created")
-      .then(processExecutionPersistenceBundleTask);
-
-    Cadenza.createMetaTask(
-      "Normalize routine execution update event",
-      (ctx) => buildRoutineExecutionUpdateBundleFromContext(ctx as Record<string, any>) ?? false,
-      "Normalizes routine execution updates into a coordinator bundle.",
-      {
-        register: false,
-        isHidden: true,
-      },
-    )
-      .doOn("global.meta.graph_metadata.routine_execution_ended")
-      .then(processExecutionPersistenceBundleTask);
-
-    Cadenza.createMetaTask(
-      "Normalize task execution update event",
-      (ctx) => buildTaskExecutionUpdateBundleFromContext(ctx as Record<string, any>) ?? false,
-      "Normalizes task execution updates into a coordinator bundle.",
-      {
-        register: false,
-        isHidden: true,
-      },
-    )
-      .doOn("global.meta.graph_metadata.task_execution_ended")
-      .then(processExecutionPersistenceBundleTask);
   }
 }

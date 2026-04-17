@@ -7,6 +7,7 @@ import Cadenza, {
   AUTHORITY_SERVICE_MANIFEST_UPDATED_SIGNAL,
 } from "@cadenza.io/service";
 import CadenzaDB, {
+  buildServiceNotRespondingAuthorityUpdates,
   buildServiceInstanceLeaseConsistencyUpdates,
   collectProjectedManifestStructuralRowsFromManifestRows,
   resolveDefaultLocalCadenzaDBQueryIntent,
@@ -89,7 +90,20 @@ describe("local CadenzaDB sync task resolution", () => {
     );
   });
 
-  it("prefers the generated default query intent for local inquiry wrappers", () => {
+  it("prefers the meta generated default query intent for local inquiry wrappers", () => {
+    expect(
+      resolveDefaultLocalCadenzaDBQueryIntent({
+        name: "Query service_instance",
+        handlesIntents: new Set([
+          "service-instance-lookup",
+          "query-pg-cadenzadb-postgres-actor-service_instance",
+          "meta-query-pg-cadenzadb-postgres-actor-service_instance",
+        ]),
+      }),
+    ).toBe("meta-query-pg-cadenzadb-postgres-actor-service_instance");
+  });
+
+  it("falls back to the legacy generated default query intent when no meta variant exists", () => {
     expect(
       resolveDefaultLocalCadenzaDBQueryIntent({
         name: "Query service_instance",
@@ -208,6 +222,79 @@ describe("local CadenzaDB sync task resolution", () => {
         },
       },
     ]);
+  });
+
+  it("builds authority updates for nonresponsive service instances", () => {
+    expect(
+      buildServiceNotRespondingAuthorityUpdates(
+        {
+          filter: {
+            uuid: "instance-7",
+          },
+          data: {
+            last_active: "2026-04-15T15:31:00.000Z",
+          },
+        },
+        {
+          __reason: "test",
+        },
+      ),
+    ).toEqual({
+      serviceInstanceUpdate: {
+        __reason: "test",
+        filter: {
+          uuid: "instance-7",
+        },
+        data: {
+          is_active: false,
+          is_non_responsive: true,
+          deleted: false,
+          last_active: "2026-04-15T15:31:00.000Z",
+          modified: "2026-04-15T15:31:00.000Z",
+        },
+        queryData: {
+          filter: {
+            uuid: "instance-7",
+          },
+          data: {
+            is_active: false,
+            is_non_responsive: true,
+            deleted: false,
+            last_active: "2026-04-15T15:31:00.000Z",
+            modified: "2026-04-15T15:31:00.000Z",
+          },
+        },
+      },
+      serviceInstanceLeaseUpdate: {
+        __reason: "test",
+        filter: {
+          service_instance_id: "instance-7",
+        },
+        data: {
+          status: "non_responsive",
+          is_ready: false,
+          readiness_reason: "non_responsive",
+          lease_expires_at: "2026-04-15T15:31:00.000Z",
+          last_ready_at: null,
+          deleted: false,
+          modified: "2026-04-15T15:31:00.000Z",
+        },
+        queryData: {
+          filter: {
+            service_instance_id: "instance-7",
+          },
+          data: {
+            status: "non_responsive",
+            is_ready: false,
+            readiness_reason: "non_responsive",
+            lease_expires_at: "2026-04-15T15:31:00.000Z",
+            last_ready_at: null,
+            deleted: false,
+            modified: "2026-04-15T15:31:00.000Z",
+          },
+        },
+      },
+    });
   });
 
   it("registers bootstrap authority responders for service instance and transport inserts", async () => {
@@ -373,6 +460,101 @@ describe("local CadenzaDB sync task resolution", () => {
         data: expect.objectContaining({
           uuid: "runner-late-transport-1",
           service_instance_id: "runner-late-1",
+        }),
+      },
+    ]);
+  });
+
+  it("persists authority service manifests when parent rows exist in the DB actor runtime", async () => {
+    vi.resetModules();
+
+    const serviceModule = await import("@cadenza.io/service");
+    const FreshCadenza = serviceModule.default;
+    const dbModule = await import("../src/index");
+    const FreshCadenzaDB = dbModule.default;
+    const insertedRows: Array<Record<string, unknown>> = [];
+
+    FreshCadenza.createMetaTask("Insert service_manifest", (ctx) => {
+      insertedRows.push({
+        table: "service_manifest",
+        data: ctx.data,
+        queryData: ctx.queryData,
+      });
+      return {
+        uuid: ctx.data?.service_instance_id,
+        data: ctx.data,
+      };
+    });
+
+    vi.spyOn(FreshCadenza, "createMetaDatabaseService").mockImplementation(
+      (() => undefined) as any,
+    );
+    vi.spyOn(FreshCadenza, "interval").mockImplementation((() => undefined) as any);
+
+    const getActorSpy = vi.spyOn(FreshCadenza, "getActor");
+
+    FreshCadenzaDB.createCadenzaDBService();
+
+    getActorSpy.mockImplementation(((actorName: string) => {
+      if (actorName === "CadenzaDBPostgresActor") {
+        return {
+          getRuntimeState: () => ({
+            pool: {
+              query: vi.fn(async () => ({
+                rows: [
+                  {
+                    service_exists: true,
+                    service_instance_exists: true,
+                  },
+                ],
+              })),
+            },
+          }),
+        } as any;
+      }
+
+      return undefined as any;
+    }) as any);
+
+    await FreshCadenza.inquire(
+      AUTHORITY_SERVICE_MANIFEST_REPORT_INTENT,
+      {
+        serviceName: "ScheduledRunnerService",
+        serviceInstanceId: "runner-1",
+        revision: 3,
+        manifestHash: "runner-manifest-v3",
+        publishedAt: "2026-04-14T12:00:00.000Z",
+        tasks: [],
+        signals: [],
+        intents: [],
+        actors: [],
+        routines: [],
+        helpers: [],
+        globals: [],
+        directionalTaskMaps: [],
+        signalToTaskMaps: [],
+        intentToTaskMaps: [],
+        actorTaskMaps: [],
+        taskToRoutineMaps: [],
+      },
+      { requireComplete: true },
+    );
+
+    expect(insertedRows).toEqual([
+      {
+        table: "service_manifest",
+        data: expect.objectContaining({
+          service_instance_id: "runner-1",
+          service_name: "ScheduledRunnerService",
+          revision: 3,
+          manifest_hash: "runner-manifest-v3",
+        }),
+        queryData: expect.objectContaining({
+          data: expect.objectContaining({
+            service_instance_id: "runner-1",
+            service_name: "ScheduledRunnerService",
+          }),
+          onConflict: expect.any(Object),
         }),
       },
     ]);
@@ -1332,6 +1514,9 @@ describe("local CadenzaDB sync task resolution", () => {
     ]) {
       FreshCadenza.createMetaTask(taskName, () => ({}));
     }
+    FreshCadenza.createMetaTask("Query service", () => ({ rows: [] })).respondsTo(
+      "query-pg-cadenzadb-postgres-actor-service",
+    );
 
     vi.spyOn(FreshCadenza, "createMetaDatabaseService").mockImplementation(
       (() => undefined) as any,
@@ -1367,6 +1552,9 @@ describe("local CadenzaDB sync task resolution", () => {
     ]) {
       FreshCadenza.createMetaTask(taskName, () => ({}));
     }
+    FreshCadenza.createMetaTask("Query service", () => ({ rows: [] })).respondsTo(
+      "query-pg-cadenzadb-postgres-actor-service",
+    );
 
     vi.spyOn(FreshCadenza, "createMetaDatabaseService").mockImplementation(
       (() => undefined) as any,
@@ -1417,7 +1605,7 @@ describe("local CadenzaDB sync task resolution", () => {
     const FreshCadenzaDB = dbModule.default;
 
     let capturedInsertContext: Record<string, any> | null = null;
-    let capturedManifestUpdate: Record<string, any> | null = null;
+    let scheduledManifestProjection: Record<string, any> | null = null;
 
     for (const taskName of [
       "Query service_instance",
@@ -1426,20 +1614,48 @@ describe("local CadenzaDB sync task resolution", () => {
     ]) {
       FreshCadenza.createMetaTask(taskName, () => ({}));
     }
+    FreshCadenza.createMetaTask("Query service", () => ({
+      rows: [{ name: "OrdersService" }],
+    })).respondsTo("query-pg-cadenzadb-postgres-actor-service");
 
     FreshCadenza.createMetaTask("Insert service_manifest", (ctx) => {
       capturedInsertContext = ctx as Record<string, any>;
       return { rowCount: 1, __success: true };
     });
-    FreshCadenza.createMetaTask("Capture manifest update signal", (ctx) => {
-      capturedManifestUpdate = ctx as Record<string, any>;
-      return true;
-    }).doOn(AUTHORITY_SERVICE_MANIFEST_UPDATED_SIGNAL);
 
     vi.spyOn(FreshCadenza, "createMetaDatabaseService").mockImplementation(
       (() => undefined) as any,
     );
     vi.spyOn(FreshCadenza, "interval").mockImplementation((() => undefined) as any);
+    vi.spyOn(FreshCadenza, "schedule").mockImplementation(
+      ((signal: string, ctx: Record<string, any>) => {
+        if (
+          signal === "meta.cadenza_db.authority_service_manifest_projection_requested"
+        ) {
+          scheduledManifestProjection = ctx;
+        }
+      }) as any,
+    );
+    vi.spyOn(FreshCadenza, "getActor").mockImplementation(((actorName: string) => {
+      if (actorName === "CadenzaDBPostgresActor") {
+        return {
+          getRuntimeState: () => ({
+            pool: {
+              query: vi.fn(async () => ({
+                rows: [
+                  {
+                    service_exists: true,
+                    service_instance_exists: true,
+                  },
+                ],
+              })),
+            },
+          }),
+        } as any;
+      }
+
+      return undefined as any;
+    }) as any);
 
     FreshCadenzaDB.createCadenzaDBService();
 
@@ -1473,13 +1689,199 @@ describe("local CadenzaDB sync task resolution", () => {
       service_instance_id: "7c73db27-943c-40b6-9565-b92be77a02ce",
       service_name: "OrdersService",
     });
-    expect(capturedManifestUpdate).toMatchObject({
+    expect(scheduledManifestProjection).toMatchObject({
+      __serviceManifestSnapshot: {
+        serviceName: "OrdersService",
+        serviceInstanceId: "7c73db27-943c-40b6-9565-b92be77a02ce",
+        revision: 1,
+        manifestHash: "m-test",
+        publishedAt: "2026-03-29T12:00:00.000Z",
+      },
+      serviceManifest: {
       serviceName: "OrdersService",
       serviceInstanceId: "7c73db27-943c-40b6-9565-b92be77a02ce",
       revision: 1,
       manifestHash: "m-test",
       publishedAt: "2026-03-29T12:00:00.000Z",
+      },
     });
+  });
+
+  it("does not emit manifest-updated for an unchanged authority manifest snapshot", async () => {
+    vi.resetModules();
+
+    const serviceModule = await import("@cadenza.io/service");
+    const FreshCadenza = serviceModule.default;
+    const dbModule = await import("../src/index");
+    const FreshCadenzaDB = dbModule.default;
+
+    let insertCount = 0;
+    let capturedManifestUpdate: Record<string, any> | null = null;
+
+    for (const taskName of [
+      "Query service_instance",
+      "Query service_instance_transport",
+      "Query service_manifest",
+    ]) {
+      FreshCadenza.createMetaTask(taskName, () => ({}));
+    }
+
+    FreshCadenza.createMetaTask("Insert service_manifest", (ctx) => {
+      if ((ctx as Record<string, any>)?.data) {
+        insertCount += 1;
+      }
+      return { rowCount: 1, __success: true };
+    });
+    FreshCadenza.createMetaTask("Capture manifest update signal", (ctx) => {
+      capturedManifestUpdate = ctx as Record<string, any>;
+      return true;
+    }).doOn(AUTHORITY_SERVICE_MANIFEST_UPDATED_SIGNAL);
+
+    vi.spyOn(FreshCadenza, "createMetaDatabaseService").mockImplementation(
+      (() => undefined) as any,
+    );
+    vi.spyOn(FreshCadenza, "interval").mockImplementation((() => undefined) as any);
+    vi.spyOn(FreshCadenza, "getActor").mockImplementation(((actorName: string) => {
+      if (actorName === "CadenzaDBPostgresActor") {
+        return {
+          getRuntimeState: () => ({
+            pool: {
+              query: vi.fn(async (sql: string) => {
+                if (sql.includes("FROM service_manifest")) {
+                  return {
+                    rows: [
+                      {
+                        revision: 3,
+                        manifest_hash: "m-existing",
+                      },
+                    ],
+                  };
+                }
+
+                return {
+                  rows: [
+                    {
+                      service_exists: true,
+                      service_instance_exists: true,
+                    },
+                  ],
+                };
+              }),
+            },
+          }),
+        } as any;
+      }
+
+      return undefined as any;
+    }) as any);
+
+    FreshCadenzaDB.createCadenzaDBService();
+
+    await FreshCadenza.inquire(AUTHORITY_SERVICE_MANIFEST_REPORT_INTENT, {
+      serviceName: "OrdersService",
+      serviceInstanceId: "7c73db27-943c-40b6-9565-b92be77a02ce",
+      revision: 3,
+      manifestHash: "m-existing",
+      publishedAt: "2026-03-29T12:00:00.000Z",
+      tasks: [],
+      signals: [],
+      intents: [],
+      actors: [],
+      routines: [],
+      directionalTaskMaps: [],
+      signalTaskMaps: [],
+      intentTaskMaps: [],
+      actorTaskMaps: [],
+      taskRoutineMaps: [],
+    });
+
+    expect(insertCount).toBe(0);
+    expect(capturedManifestUpdate).toBeNull();
+  });
+
+  it("retries service manifest reports until the parent service row exists", async () => {
+    vi.resetModules();
+
+    const serviceModule = await import("@cadenza.io/service");
+    const FreshCadenza = serviceModule.default;
+    const dbModule = await import("../src/index");
+    const FreshCadenzaDB = dbModule.default;
+
+    let parentPresenceQueryCount = 0;
+    let insertCount = 0;
+
+    for (const taskName of [
+      "Query service_instance",
+      "Query service_instance_transport",
+      "Query service_manifest",
+    ]) {
+      FreshCadenza.createMetaTask(taskName, () => ({}));
+    }
+
+    FreshCadenza.createMetaTask("Insert service_manifest", (ctx) => {
+      if ((ctx as Record<string, any>)?.data) {
+        insertCount += 1;
+      }
+      return { rowCount: 1, __success: true };
+    });
+
+    vi.spyOn(FreshCadenza, "createMetaDatabaseService").mockImplementation(
+      (() => undefined) as any,
+    );
+    vi.spyOn(FreshCadenza, "interval").mockImplementation((() => undefined) as any);
+    vi.spyOn(FreshCadenza, "getActor").mockImplementation(((actorName: string) => {
+      if (actorName === "CadenzaDBPostgresActor") {
+        return {
+          getRuntimeState: () => ({
+            pool: {
+              query: vi.fn(async () => {
+                parentPresenceQueryCount += 1;
+                return {
+                  rows: [
+                    {
+                      service_exists: parentPresenceQueryCount >= 2,
+                      service_instance_exists: parentPresenceQueryCount >= 2,
+                    },
+                  ],
+                };
+              }),
+            },
+          }),
+        } as any;
+      }
+
+      return undefined as any;
+    }) as any);
+
+    FreshCadenzaDB.createCadenzaDBService();
+
+    await FreshCadenza.inquire(
+      AUTHORITY_SERVICE_MANIFEST_REPORT_INTENT,
+      {
+        serviceName: "OrdersService",
+        serviceInstanceId: "7c73db27-943c-40b6-9565-b92be77a02ce",
+        revision: 1,
+        manifestHash: "m-test",
+        publishedAt: "2026-03-29T12:00:00.000Z",
+        tasks: [],
+        signals: [],
+        intents: [],
+        actors: [],
+        routines: [],
+        directionalTaskMaps: [],
+        signalTaskMaps: [],
+        intentTaskMaps: [],
+        actorTaskMaps: [],
+        taskRoutineMaps: [],
+      },
+    );
+
+    expect(insertCount).toBe(0);
+
+    await new Promise((resolve) => setTimeout(resolve, 350));
+
+    expect(parentPresenceQueryCount).toBeGreaterThanOrEqual(2);
+    expect(insertCount).toBe(1);
   });
 
   it("collects latest manifest structural rows for manifest entities and maps", () => {
@@ -2290,6 +2692,171 @@ describe("local CadenzaDB sync task resolution", () => {
         }),
       ],
     });
+  });
+
+  it("keeps manifest association inserts queued until replayed entity inserts finish", async () => {
+    vi.resetModules();
+
+    const serviceModule = await import("@cadenza.io/service");
+    const FreshCadenza = serviceModule.default;
+    const dbModule = await import("../src/index");
+    const FreshCadenzaDB = dbModule.default;
+
+    const capturedAssociationRequests: Array<Record<string, any>> = [];
+    FreshCadenza.createMetaTask("Query service_instance", () => ({ rows: [] }));
+    FreshCadenza.createMetaTask("Query service_instance_transport", () => ({
+      rows: [],
+    }));
+    FreshCadenza.createMetaTask("Query service_manifest", () => ({
+      rows: [
+        {
+          service_instance_id: "anomaly-instance-1",
+          manifest: {
+            serviceName: "AnomalyDetectorService",
+            serviceInstanceId: "anomaly-instance-1",
+            revision: 1,
+            manifestHash: "anomaly-v1",
+            publishedAt: "2026-04-15T10:00:00.000Z",
+            tasks: [
+              {
+                name: "Normalize anomaly detect input",
+                version: 1,
+                service_name: "AnomalyDetectorService",
+                display_name: "Normalize anomaly detect input",
+                description: "Normalizes anomaly detection input.",
+                is_meta: false,
+              },
+            ],
+            signals: [],
+            intents: [
+              {
+                name: "iot-anomaly-detect",
+                description: "Detects anomalies from telemetry input.",
+                input: { type: "object" },
+                output: { type: "object" },
+                is_meta: false,
+              },
+            ],
+            actors: [],
+            routines: [],
+            directionalTaskMaps: [],
+            signalToTaskMaps: [],
+            intentToTaskMaps: [
+              {
+                intent_name: "iot-anomaly-detect",
+                service_name: "AnomalyDetectorService",
+                task_name: "Normalize anomaly detect input",
+                task_version: 1,
+              },
+            ],
+            actorTaskMaps: [],
+            taskToRoutineMaps: [],
+          },
+        },
+      ],
+    }));
+
+    FreshCadenza.createMetaTask(
+      "Insert task",
+      () =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve({ rowCount: 1, __success: true }), 1000);
+        }),
+    );
+    FreshCadenza.createMetaTask("Insert signal_registry", () => ({
+      rowCount: 1,
+      __success: true,
+    }));
+    FreshCadenza.createMetaTask("Insert intent_registry", () => ({
+      rowCount: 1,
+      __success: true,
+    }));
+    FreshCadenza.createMetaTask("Insert actor", () => ({
+      rowCount: 1,
+      __success: true,
+    }));
+    FreshCadenza.createMetaTask("Insert routine", () => ({
+      rowCount: 1,
+      __success: true,
+    }));
+    FreshCadenza.createMetaTask("Insert intent_to_task_map", () => ({
+      rowCount: 1,
+      __success: true,
+    }));
+    FreshCadenza.createMetaTask(
+      "Capture manifest association projection request while task insert pending",
+      (ctx) => {
+        capturedAssociationRequests.push(ctx as Record<string, any>);
+        return true;
+      },
+    ).doOn("meta.cadenza_db.manifest_association_projection_requested");
+
+    vi.spyOn(FreshCadenza, "createMetaDatabaseService").mockImplementation(
+      (() => undefined) as any,
+    );
+    vi.spyOn(FreshCadenza, "interval").mockImplementation((() => undefined) as any);
+
+    FreshCadenzaDB.createCadenzaDBService();
+
+    const projectTask = FreshCadenza.get(
+      "Project persisted authority registry state",
+    );
+    expect(projectTask).toBeTruthy();
+
+    FreshCadenza.run(projectTask!, {
+      serviceInstances: [],
+      serviceInstanceTransports: [],
+      serviceManifests: [
+        {
+          service_instance_id: "anomaly-instance-1",
+          manifest: {
+            serviceName: "AnomalyDetectorService",
+            serviceInstanceId: "anomaly-instance-1",
+            revision: 1,
+            manifestHash: "anomaly-v1",
+            publishedAt: "2026-04-15T10:00:00.000Z",
+            tasks: [
+              {
+                name: "Normalize anomaly detect input",
+                version: 1,
+                service_name: "AnomalyDetectorService",
+                display_name: "Normalize anomaly detect input",
+                description: "Normalizes anomaly detection input.",
+                is_meta: false,
+              },
+            ],
+            signals: [],
+            intents: [
+              {
+                name: "iot-anomaly-detect",
+                description: "Detects anomalies from telemetry input.",
+                input: { type: "object" },
+                output: { type: "object" },
+                is_meta: false,
+              },
+            ],
+            actors: [],
+            routines: [],
+            directionalTaskMaps: [],
+            signalToTaskMaps: [],
+            intentToTaskMaps: [
+              {
+                intent_name: "iot-anomaly-detect",
+                service_name: "AnomalyDetectorService",
+                task_name: "Normalize anomaly detect input",
+                task_version: 1,
+              },
+            ],
+            actorTaskMaps: [],
+            taskToRoutineMaps: [],
+          },
+        },
+      ],
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(capturedAssociationRequests).toHaveLength(0);
   });
 
   it("registers the authority registry projection flow after local query tasks appear", async () => {

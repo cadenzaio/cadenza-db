@@ -36,20 +36,20 @@
     "@babel/helper-string-parser" "^7.27.1"
     "@babel/helper-validator-identifier" "^7.28.5"
 
-"@cadenza.io/core@^3.27.0":
-  version "3.27.0"
-  resolved "https://registry.npmjs.org/@cadenza.io/core/-/core-3.27.0.tgz"
-  integrity sha512-stGpyNBN1xDlSBqahLwEjIaAQ93TtoqfD/Uu5lpoSjEpJnmMo6yFGr61JWbN/lwztemo8ns9jKHFeWD03pxQ4w==
+"@cadenza.io/core@^3.28.1":
+  version "3.28.1"
+  resolved "https://registry.npmjs.org/@cadenza.io/core/-/core-3.28.1.tgz"
+  integrity sha512-GX87Usqtgpk+aD+wVfiWc+tZwt5LJN3oWyvJx6NQ3L/Buq7pJ6FhL691qF7O+TjmNGfurMdyF9M2FTAzNHSSbQ==
   dependencies:
     "@types/uuid" "^10.0.0"
     uuid "^10.0.0"
 
-"@cadenza.io/service@2.20.0":
-  version "2.20.0"
-  resolved "https://registry.npmjs.org/@cadenza.io/service/-/service-2.20.0.tgz"
-  integrity sha512-Nj78dWxW6u0LAjZB3VSiuF1U5GS5pWH7KMX2eCa7HLeQLUqB1ees5a4Phz5/USPcD1XTqiVLehZU4mjW1FP+lA==
+"@cadenza.io/service@^2.21.1":
+  version "2.21.1"
+  resolved "https://registry.npmjs.org/@cadenza.io/service/-/service-2.21.1.tgz"
+  integrity sha512-Vi4edrvjShVC+q9Bzqva5uDvFOZL/Jpo+dunL5NtbhmxXitX0EAwuRX79/5/cqbPimydJQ+T8u1tJbPfrBvFmg==
   dependencies:
-    "@cadenza.io/core" "^3.27.0"
+    "@cadenza.io/core" "^3.28.1"
     "@types/pg" "^8.15.4"
     "@types/uuid" "^10.0.0"
     body-parser "^2.2.0"
