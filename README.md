@@ -1,5 +1,8 @@
 # Cadenza DB
 
+> [!WARNING]
+> **Legacy pre-v4 Cadenza implementation.** This repository does not define the current Cadenza architecture or contracts. No compatibility with the new major-version direction is promised. See [cadenza-workspace](https://github.com/cadenzaio/cadenza-workspace) for the current architecture and releases.
+
 ## Overview
 
 Cadenza is an innovative framework that extends traditional orchestration with event-driven choreography, providing "structured freedom" for building distributed, self-evolving systems. 
